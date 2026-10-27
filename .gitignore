@@ -1,0 +1,16 @@
+cd ~\nonglink-agent
+@"
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+node_modules/
+.next/
+dist/
+*.db
+*.log
+uploads/
+amostras/
+backend/data/
+"@ | Out-File -Encoding ascii -Append .gitignore

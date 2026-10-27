@@ -1,0 +1,7 @@
+openai>=1.60.0
+fastapi>=0.115.0
+uvicorn>=0.32.0
+python-dotenv>=1.0.1
+Pillow>=10.0.0
+python-multipart>=0.0.9
+imageio-ffmpeg>=0.5.1
