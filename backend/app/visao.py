@@ -1,22 +1,26 @@
-"""Vision segmentation module (backend/visao.py) using Meta's sam-3.1 model."""
+"""Vision segmentation module (app/visao.py) using Meta's sam-3.1 model."""
 
 import base64
 import json
 import mimetypes
-import os
 from pathlib import Path
 import re
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from dotenv import load_dotenv
 from openai import APIStatusError, AuthenticationError, NotFoundError, OpenAI
 from PIL import Image, ImageDraw
 
-BASE_URL = "https://api.meta.ai/v1"
-SAM_MODEL = "sam-3.1"
-DEFAULT_OUTPUT_IMAGE = str(Path("amostras") / "saida_caixas.jpg")
-UPLOADS_DIR = Path("uploads")
+from app.config import (
+    DEFAULT_OUTPUT_BOXES_PATH,
+    META_BASE_URL,
+    SAMPLES_DIR,
+    UPLOADS_DIR,
+    VISION_SAM_MODEL,
+    get_model_api_key,
+)
+
+DEFAULT_OUTPUT_IMAGE: str = str(DEFAULT_OUTPUT_BOXES_PATH)
 
 CONCEPT_TRANSLATION_MAP: Dict[str, str] = {
     "tomate": "tomato",
@@ -40,7 +44,6 @@ CONCEPT_TRANSLATION_MAP: Dict[str, str] = {
 }
 
 BOX_TOKEN_REGEX = re.compile(r"<\|box;([^|]+)\|>")
-MASK_TOKEN_REGEX = re.compile(r"<\|mask;([^|]+)\|>")
 
 
 class VisionSegmentationError(RuntimeError):
@@ -93,7 +96,7 @@ def _call_sam_responses(
     for img_block in image_inputs:
         try:
             response = client.responses.create(
-                model=SAM_MODEL,
+                model=VISION_SAM_MODEL,
                 input=[
                     {
                         "type": "message",
@@ -229,9 +232,9 @@ def _parse_sam_output(
 
 
 def draw_boxes_on_image(
-    source_image_path: str,
+    source_image_path: Union[str, Path],
     boxes: List[Dict[str, int]],
-    output_image_path: str = DEFAULT_OUTPUT_IMAGE,
+    output_image_path: Union[str, Path] = DEFAULT_OUTPUT_BOXES_PATH,
 ) -> str:
     """Draw detected bounding boxes on the image using Pillow and save to output_image_path."""
     src_path = Path(source_image_path)
@@ -259,45 +262,43 @@ def draw_boxes_on_image(
 
 
 def resolve_photo_path(foto_id: str) -> Path:
-    """Resolve a foto_id or relative path to an existing image file in uploads/ or amostras/."""
+    """Resolve a foto_id or relative path to an existing image file in UPLOADS_DIR or SAMPLES_DIR."""
     cleaned = foto_id.strip()
     direct = Path(cleaned)
     if direct.exists() and direct.is_file():
         return direct
 
-    for folder in (UPLOADS_DIR, Path("amostras")):
-        candidate = folder / cleaned
-        if candidate.exists() and candidate.is_file():
-            return candidate
-        if folder.exists():
-            for ext in (".jpg", ".jpeg", ".png", ".webp"):
-                with_ext = folder / f"{cleaned}{ext}"
-                if with_ext.exists() and with_ext.is_file():
-                    return with_ext
+    base_name = direct.name
+    for folder in (UPLOADS_DIR, SAMPLES_DIR):
+        for candidate_name in (cleaned, base_name):
+            candidate = folder / candidate_name
+            if candidate.exists() and candidate.is_file():
+                return candidate
+            if folder.exists():
+                for ext in (".jpg", ".jpeg", ".png", ".webp"):
+                    with_ext = folder / f"{candidate_name}{ext}"
+                    if with_ext.exists() and with_ext.is_file():
+                        return with_ext
 
     raise VisionSegmentationError(
-        f"Erro: Foto '{foto_id}' não encontrada em 'uploads/' nem em 'amostras/'."
+        f"Erro: Foto '{foto_id}' não encontrada em '{UPLOADS_DIR}' nem em '{SAMPLES_DIR}'."
     )
 
 
 def segmentar(
     caminho_imagem: str,
     prompt_texto: str = "tomato",
-    caminho_saida: str = DEFAULT_OUTPUT_IMAGE,
+    caminho_saida: Union[str, Path] = DEFAULT_OUTPUT_BOXES_PATH,
 ) -> Dict[str, Any]:
     """Segment objects matching prompt_texto in caminho_imagem using Meta's sam-3.1 model."""
-    load_dotenv()
-    api_key = os.environ.get("MODEL_API_KEY", "").strip()
-    if not api_key:
+    try:
+        api_key = get_model_api_key()
+    except RuntimeError as exc:
         raise VisionSegmentationError(
             "Erro: Variável MODEL_API_KEY não encontrada no ambiente (.env)."
-        )
+        ) from exc
 
-    img_path = Path(caminho_imagem)
-    if not img_path.exists() or not img_path.is_file():
-        raise VisionSegmentationError(
-            f"Erro: Ficheiro de imagem não encontrado: '{caminho_imagem}'."
-        )
+    img_path = resolve_photo_path(caminho_imagem)
 
     try:
         with Image.open(img_path) as img:
@@ -307,7 +308,7 @@ def segmentar(
             f"Erro ao abrir a imagem '{caminho_imagem}': {exc}"
         ) from exc
 
-    client = OpenAI(base_url=BASE_URL, api_key=api_key)
+    client = OpenAI(base_url=META_BASE_URL, api_key=api_key)
     file_id, data_url = _upload_file_or_data_url(client, img_path)
 
     primary_concept = _normalize_prompt_concept(prompt_texto)
@@ -324,7 +325,7 @@ def segmentar(
         ) from exc
     except NotFoundError as exc:
         raise VisionSegmentationError(
-            f"Erro 404: Endpoint '{BASE_URL}' ou modelo '{SAM_MODEL}' não encontrado."
+            f"Erro 404: Endpoint '{META_BASE_URL}' ou modelo '{VISION_SAM_MODEL}' não encontrado."
         ) from exc
     except APIStatusError as exc:
         raise VisionSegmentationError(
@@ -334,7 +335,7 @@ def segmentar(
     boxes, coverage_pct = _parse_sam_output(raw_output, img_width, img_height)
 
     saved_output_path = draw_boxes_on_image(
-        source_image_path=str(img_path),
+        source_image_path=img_path,
         boxes=boxes,
         output_image_path=caminho_saida,
     )
@@ -356,7 +357,7 @@ def segmentar(
         )
 
     return {
-        "modelo": SAM_MODEL,
+        "modelo": VISION_SAM_MODEL,
         "prompt_original": prompt_texto,
         "conceito_sam": primary_concept,
         "contagem": count,
@@ -374,7 +375,7 @@ segment_image = segmentar
 
 
 def main() -> None:
-    """CLI entry point: python visao.py <caminho_imagem> [prompt_texto]."""
+    """CLI entry point: python -m app.visao <caminho_imagem> [prompt_texto]."""
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     if hasattr(sys.stderr, "reconfigure"):
@@ -382,7 +383,7 @@ def main() -> None:
 
     if len(sys.argv) < 2:
         print(
-            "Uso: .\\.venv\\Scripts\\python.exe visao.py <caminho_imagem> [prompt_texto]",
+            "Uso: ..\\.venv\\Scripts\\python.exe -m app.visao <caminho_imagem> [prompt_texto]",
             file=sys.stderr,
         )
         sys.exit(1)

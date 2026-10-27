@@ -1,72 +1,66 @@
-"""NongLink Field Agent for farmers in Angola, DRC, and Congo (PT, FR, EN).
+"""NongLink Field Agent core module (app/agent.py) for farmers in Angola, DRC, and Congo.
 
-Uses the Meta Model API (https://api.meta.ai/v1, model 'muse-spark-1.3') via the
-OpenAI Python SDK Responses API with tool calling, encrypted reasoning state
-preservation, human-in-the-loop terminal confirmation, and audit logging.
+Runs the multi-turn agent loop using Meta's Responses API (muse-spark-1.3) with
+tool calling (obter_preco, criar_anuncio, agendar_rega, analisar_foto),
+encrypted reasoning preservation, human confirmation, and audit logging.
 """
 
 from datetime import datetime, timezone
 import json
-import os
 import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from dotenv import load_dotenv
 from openai import APIStatusError, AuthenticationError, NotFoundError, OpenAI
 
-from backend.db import (
+from app.config import (
+    LOG_FILE_PATH,
+    MAX_AGENT_TURNS,
+    META_BASE_URL,
+    REASONING_MODEL,
+    get_model_api_key,
+)
+from app.db import (
     get_crop_price_from_db,
     init_db,
     insert_irrigation,
     insert_listing,
 )
-from backend.visao import resolve_photo_path, segmentar
+from app.visao import resolve_photo_path, segmentar
 
-BASE_URL = "https://api.meta.ai/v1"
-MODEL_NAME = "muse-spark-1.3"
-MAX_TURNS = 5
-LOG_FILE_PATH = "acoes.log"
+BASE_URL = META_BASE_URL
+MODEL_NAME = REASONING_MODEL
+MAX_TURNS = MAX_AGENT_TURNS
 
-# Fictional reference crop prices in Angolan Kwanza per kilogram (Kz/kg)
-# Supports Portuguese, French, and English crop names.
 FICTIONAL_CROP_PRICES_KZ: Dict[str, int] = {
-    # Tomato
     "tomate": 850,
     "tomates": 850,
     "tomato": 850,
     "tomatoes": 850,
-    # Cassava / Manioc
     "mandioca": 450,
     "manioc": 450,
     "cassava": 450,
-    # Maize / Corn
     "milho": 600,
     "mais": 600,
     "maïs": 600,
     "maize": 600,
     "corn": 600,
-    # Beans
     "feijao": 1200,
     "feijão": 1200,
     "haricot": 1200,
     "haricots": 1200,
     "bean": 1200,
     "beans": 1200,
-    # Potato
     "batata": 750,
     "batata-doce": 550,
     "pomme de terre": 750,
     "patate douce": 550,
     "potato": 750,
     "sweet potato": 550,
-    # Onion
     "cebola": 950,
     "oignon": 950,
     "onion": 950,
-    # Banana / Plantain
     "banana": 500,
     "banane": 500,
     "plantain": 550,
-    # Coffee
     "cafe": 2100,
     "café": 2100,
     "coffee": 2100,
@@ -216,7 +210,7 @@ TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "foto_id": {
                     "type": "string",
-                    "description": "Photo identifier or filename (e.g., 'FOTO-0001.jpg' or 'amostras/tomates.jpg').",
+                    "description": "Photo identifier or filename (e.g., 'FOTO-0001.jpg' or 'tomates.jpg').",
                 },
                 "objecto": {
                     "type": "string",
@@ -243,7 +237,8 @@ def detect_language(text: str) -> str:
 
 
 def log_action(tool_name: str, args: Dict[str, Any], status: str, details: Dict[str, Any]) -> None:
-    """Append an action record to acoes.log in JSON Lines format."""
+    """Append an action record to LOG_FILE_PATH in JSON Lines format."""
+    LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).isoformat()
     log_entry = {
         "timestamp": timestamp,
@@ -411,7 +406,6 @@ def analyze_photo(foto_id: str, objecto: str) -> Dict[str, Any]:
     return result
 
 
-# Required Portuguese function aliases matching the specification
 obter_preco = get_crop_price
 criar_anuncio = create_listing
 agendar_rega = schedule_irrigation
@@ -467,14 +461,9 @@ def ask_terminal_confirmation(prompt_text: str) -> bool:
 
 def create_meta_client() -> OpenAI:
     """Create and return an OpenAI client configured for the Meta Model API."""
-    load_dotenv()
-    if "MODEL_API_KEY" not in os.environ or not os.environ["MODEL_API_KEY"].strip():
-        raise RuntimeError(
-            "MODEL_API_KEY environment variable is missing. Please configure your .env file."
-        )
     return OpenAI(
-        base_url=BASE_URL,
-        api_key=os.environ["MODEL_API_KEY"],
+        base_url=META_BASE_URL,
+        api_key=get_model_api_key(),
     )
 
 
@@ -629,7 +618,7 @@ def run_agent_loop(
             include=["reasoning.encrypted_content"],
         )
 
-        # Mandatory rule: append resp.output to history on every turn
+        # Preserve encrypted reasoning tokens across turns
         history.extend(response.output)
 
         function_calls = [

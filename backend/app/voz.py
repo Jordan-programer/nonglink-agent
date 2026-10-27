@@ -1,9 +1,8 @@
-"""Voice transcription module (backend/voz.py) using Meta's muse-voice-transcribe-1.0."""
+"""Voice transcription module (app/voz.py) using Meta's muse-voice-transcribe-1.0."""
 
 import array
 import io
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,11 +13,13 @@ import urllib.request
 import uuid
 import wave
 
-from dotenv import load_dotenv
-
-ASR_ENDPOINT = "https://api.meta.ai/v1/asr/transcribe"
-ASR_MODEL = "muse-voice-transcribe-1.0"
-MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MB safety limit
+from app.config import (
+    ASR_TRANSCRIBE_URL,
+    MAX_AUDIO_FILE_BYTES,
+    SAMPLES_DIR,
+    VOICE_ASR_MODEL,
+    get_model_api_key,
+)
 
 LANGUAGE_BIAS_MAP: Dict[str, str] = {
     "pt": "Portuguese",
@@ -114,9 +115,7 @@ def _normalize_wav_to_16k_mono_pcm(raw_bytes: bytes) -> bytes:
             frames = reader.readframes(n_frames)
     except wave.Error as exc:
         raise VoiceTranscriptionError(
-            "Formato de áudio inválido: o ficheiro não é um WAV PCM válido.\n"
-            "Para converter áudios de telemóvel (.m4a, .ogg, .mp3, .webm) para WAV 16 kHz mono:\n"
-            "  ffmpeg -y -i entrada.m4a -ac 1 -ar 16000 -sample_fmt s16 amostras\\voz_pt.wav"
+            "Formato de áudio inválido: o ficheiro não é um WAV PCM válido."
         ) from exc
 
     if comptype != "NONE":
@@ -255,27 +254,36 @@ def _build_multipart_body(
     return body.getvalue(), content_type
 
 
+def _resolve_audio_path(caminho_audio: str) -> Path:
+    """Resolve an audio path directly or inside SAMPLES_DIR (backend/data/amostras)."""
+    direct = Path(caminho_audio)
+    if direct.exists() and direct.is_file():
+        return direct
+    in_samples = SAMPLES_DIR / direct.name
+    if in_samples.exists() and in_samples.is_file():
+        return in_samples
+    raise VoiceTranscriptionError(
+        f"Erro: Ficheiro de áudio não encontrado: '{caminho_audio}'."
+    )
+
+
 def transcrever(caminho_audio: str, idioma_dica: str = "pt") -> str:
     """Send an audio file to POST /v1/asr/transcribe and return the transcribed text."""
-    load_dotenv()
-    api_key = os.environ.get("MODEL_API_KEY", "").strip()
-    if not api_key:
+    try:
+        api_key = get_model_api_key()
+    except RuntimeError as exc:
         raise VoiceTranscriptionError(
             "Erro: Variável MODEL_API_KEY não encontrada no ambiente (.env)."
-        )
+        ) from exc
 
-    path_obj = Path(caminho_audio)
-    if not path_obj.exists() or not path_obj.is_file():
-        raise VoiceTranscriptionError(
-            f"Erro: Ficheiro de áudio não encontrado: '{caminho_audio}'."
-        )
+    path_obj = _resolve_audio_path(caminho_audio)
 
     file_size = path_obj.stat().st_size
     if file_size == 0:
         raise VoiceTranscriptionError(
             f"Erro: O ficheiro de áudio '{caminho_audio}' está vazio."
         )
-    if file_size > MAX_AUDIO_BYTES:
+    if file_size > MAX_AUDIO_FILE_BYTES:
         size_mb = file_size / (1024 * 1024)
         raise VoiceTranscriptionError(
             f"Erro: Ficheiro demasiado grande ({size_mb:.1f} MB). O limite máximo é 25 MB."
@@ -284,11 +292,7 @@ def transcrever(caminho_audio: str, idioma_dica: str = "pt") -> str:
     ext = path_obj.suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise VoiceTranscriptionError(
-            f"Erro: Formato de ficheiro '{ext}' não suportado.\n"
-            "O endpoint /v1/asr/transcribe aceita WAV PCM 16-bit (16 kHz ou 24 kHz) "
-            "(ou formatos de telemóvel .m4a, .3gp, .ogg, .mp3, .webm convertidos automaticamente via ffmpeg).\n"
-            "Comando de conversão manual mais simples:\n"
-            f'  ffmpeg -y -i "{caminho_audio}" -ac 1 -ar 16000 -sample_fmt s16 amostras\\voz_pt_pcm.wav'
+            f"Erro: Formato de ficheiro '{ext}' não suportado."
         )
 
     raw_bytes = path_obj.read_bytes()
@@ -302,7 +306,7 @@ def transcrever(caminho_audio: str, idioma_dica: str = "pt") -> str:
 
     bias_lang = LANGUAGE_BIAS_MAP.get(idioma_dica.strip().lower(), "Portuguese")
     request_config = {
-        "model": ASR_MODEL,
+        "model": VOICE_ASR_MODEL,
         "audioEncoding": "WAV",
         "mode": "PUSH_TO_TALK",
         "languageBias": [bias_lang],
@@ -329,7 +333,7 @@ def transcrever(caminho_audio: str, idioma_dica: str = "pt") -> str:
     )
 
     req = urllib.request.Request(
-        ASR_ENDPOINT,
+        ASR_TRANSCRIBE_URL,
         data=multipart_body,
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -362,7 +366,7 @@ def transcrever(caminho_audio: str, idioma_dica: str = "pt") -> str:
         ) from exc
     except urllib.error.URLError as exc:
         raise VoiceTranscriptionError(
-            f"Erro de ligação ao endpoint '{ASR_ENDPOINT}': {exc.reason}"
+            f"Erro de ligação ao endpoint '{ASR_TRANSCRIBE_URL}': {exc.reason}"
         ) from exc
 
     return _extract_transcript_from_response(resp_body, resp_content_type)
@@ -372,7 +376,7 @@ transcribe_audio = transcrever
 
 
 def main() -> None:
-    """CLI entry point: python voz.py <caminho_audio> [idioma_dica]."""
+    """CLI entry point: python -m app.voz <caminho_audio> [idioma_dica]."""
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     if hasattr(sys.stderr, "reconfigure"):
@@ -380,7 +384,7 @@ def main() -> None:
 
     if len(sys.argv) < 2:
         print(
-            "Uso: .\\.venv\\Scripts\\python.exe voz.py amostras\\voz_pt.wav [pt|fr|en]",
+            "Uso: ..\\.venv\\Scripts\\python.exe -m app.voz data\\amostras\\voz_pt.wav [pt|fr|en]",
             file=sys.stderr,
         )
         sys.exit(1)

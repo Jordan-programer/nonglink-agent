@@ -1,17 +1,8 @@
-"""FastAPI backend service for the NongLink Field Agent (Text, Voice ASR, SAM 3.1 Vision, and SQLite Conversations).
+"""FastAPI application entry point (backend/app/main.py) for the NongLink Field Agent.
 
-Endpoints:
-- GET /: Serves the separated frontend single-page web UI (frontend/index.html).
-- GET /static/*: Serves separated frontend static assets (frontend/styles.css, frontend/app.js).
-- GET /conversas: Lists persisted conversations from SQLite.
-- POST /conversas: Creates a new conversation in SQLite.
-- GET /conversas/{conversa_id}/mensagens: Lists messages for a conversation.
-- POST /agente: Runs the agent loop (max 5 turns), persists messages in SQLite, and pauses in 'pendente' state if confirmation is needed.
-- POST /voz: Multipart upload (sessao + audio file). Transcribes via voz.transcrever and runs the agent loop.
-- POST /foto: Multipart upload (sessao + image file). Saves the image to uploads/ and returns foto_id.
-- GET /foto/{foto_id}: Serves a stored photo for the frontend canvas.
-- POST /confirmar: Confirms or cancels a pending action, updates estado_accao & resultado_id in SQLite, and resumes the agent loop.
-- GET /anuncios & GET /regas: Return JSON rows from SQLite (nonglink.db).
+Exposes the REST API for text, voice ASR (muse-voice-transcribe-1.0), vision
+segmentation (sam-3.1), two-step confirmation (/confirmar), and SQLite persistence
+for listings, irrigations, conversations, and messages.
 """
 
 import json
@@ -19,13 +10,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import uuid
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from openai import APIStatusError, AuthenticationError, NotFoundError
 from pydantic import BaseModel, Field
 
-from backend.agent import (
+from app.agent import (
     BASE_URL,
     MAX_TURNS,
     MODEL_NAME,
@@ -40,8 +32,10 @@ from backend.agent import (
     log_action,
     schedule_irrigation,
 )
-from backend.db import (
+from app.config import FRONTEND_DIR, ROOT_INDEX_HTML, UPLOADS_DIR
+from app.db import (
     create_conversation,
+    delete_conversation,
     ensure_conversation,
     format_photo_attachment,
     get_conversation,
@@ -54,18 +48,12 @@ from backend.db import (
     update_conversation_title,
     update_message_action,
 )
-from backend.seed import seed_database
-from backend.visao import UPLOADS_DIR, VisionSegmentationError, resolve_photo_path
-from backend.voz import VoiceTranscriptionError, transcrever
+from app.visao import VisionSegmentationError, resolve_photo_path
+from app.voz import VoiceTranscriptionError, transcrever
+from scripts.seed import seed_database
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FRONTEND_DIR = PROJECT_ROOT / "frontend"
-
-# Initialize SQLite DB and uploads folder
 init_db()
 seed_database()
-UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-FRONTEND_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(
     title="NongLink Field Agent API",
@@ -77,9 +65,17 @@ app = FastAPI(
     version="4.0.0",
 )
 
-app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# In-memory state per session/conversation
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
 PENDING_SESSIONS: Dict[str, Dict[str, Any]] = {}
 SESSION_LAST_PHOTO: Dict[str, str] = {}
 PHOTO_COUNTER = 0
@@ -95,6 +91,14 @@ class CreateConversationRequest(BaseModel):
     titulo: str = Field(
         default="Nova conversa",
         description="Conversation title.",
+    )
+
+
+class RenameConversationRequest(BaseModel):
+    """Request payload for PATCH /conversas/{conversa_id}."""
+
+    titulo: str = Field(
+        description="New conversation title.",
     )
 
 
@@ -205,7 +209,7 @@ def _continue_agent_turns(
             include=["reasoning.encrypted_content"],
         )
 
-        # Mandatory rule: append response.output (including encrypted reasoning) to history
+        # Preserve encrypted reasoning tokens across turns
         history.extend(response.output)
 
         function_calls = [
@@ -236,6 +240,7 @@ def _continue_agent_turns(
                 "voltas": turn,
                 "accoes": executed_actions,
                 "analise_foto": photo_analysis,
+                "anexo_json": anexo_payload,
             }
 
         for idx, call in enumerate(function_calls):
@@ -351,11 +356,14 @@ def _continue_agent_turns(
                     "conversa_id": session_id,
                     "mensagem_id": pending_msg["id"],
                     "accao": action_payload,
+                    "accao_json": action_payload,
+                    "estado_accao": "pendente",
                     "descricao": description,
                     "resposta": description,
                     "idioma": lang,
                     "accoes": executed_actions,
                     "analise_foto": photo_analysis,
+                    "anexo_json": anexo_payload,
                 }
 
             unknown_output = {"status": "error", "message": f"Unknown tool: {call.name}"}
@@ -387,6 +395,7 @@ def _continue_agent_turns(
         "voltas": MAX_TURNS,
         "accoes": executed_actions,
         "analise_foto": photo_analysis,
+        "anexo_json": anexo_payload,
     }
 
 
@@ -420,7 +429,6 @@ def _build_initial_history(
     prior_messages = list_messages(session_id)
     history: List[Any] = [{"role": "system", "content": SYSTEM_INSTRUCTIONS}]
 
-    # Include up to the last 6 persisted messages prior to the newly inserted user message
     if len(prior_messages) > 1:
         for msg in prior_messages[-7:-1]:
             role = "user" if msg.get("papel") == "utilizador" else "assistant"
@@ -444,13 +452,12 @@ def _build_initial_history(
 
 @app.get("/", response_class=HTMLResponse)
 def serve_index() -> HTMLResponse:
-    """Serve the separated frontend single-page web interface (frontend/index.html)."""
+    """Serve the frontend web interface."""
     frontend_index = FRONTEND_DIR / "index.html"
     if frontend_index.exists():
         return HTMLResponse(content=frontend_index.read_text(encoding="utf-8"))
-    legacy_index = PROJECT_ROOT / "index.html"
-    if legacy_index.exists():
-        return HTMLResponse(content=legacy_index.read_text(encoding="utf-8"))
+    if ROOT_INDEX_HTML.exists():
+        return HTMLResponse(content=ROOT_INDEX_HTML.read_text(encoding="utf-8"))
     return HTMLResponse(
         content="<h1>NongLink Agent API (Dados de demonstração)</h1>"
     )
@@ -463,9 +470,9 @@ def health_check() -> Dict[str, str]:
 
 
 @app.get("/conversas")
-def get_conversations() -> List[Dict[str, Any]]:
+def get_conversations(q: Optional[str] = Query(default=None)) -> List[Dict[str, Any]]:
     """Return all conversations ordered from most recently updated to oldest."""
-    return list_conversations()
+    return list_conversations(q=q)
 
 
 @app.post("/conversas")
@@ -480,10 +487,35 @@ def get_conversation_detail(conversa_id: str) -> Dict[str, Any]:
     conv = get_conversation(conversa_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversa não encontrada.")
+    messages = list_messages(conversa_id)
     return {
+        "id": conv["id"],
+        "titulo": conv["titulo"],
+        "criada_em": conv["criada_em"],
+        "atualizada_em": conv["atualizada_em"],
         "conversa": conv,
-        "mensagens": list_messages(conversa_id),
+        "mensagens": messages,
     }
+
+
+@app.patch("/conversas/{conversa_id}")
+def patch_conversation(
+    conversa_id: str, payload: RenameConversationRequest
+) -> Dict[str, Any]:
+    """Rename an existing conversation."""
+    updated = update_conversation_title(conversa_id, payload.titulo)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada.")
+    return updated
+
+
+@app.delete("/conversas/{conversa_id}", status_code=204)
+def remove_conversation(conversa_id: str) -> Response:
+    """Delete a conversation and its messages."""
+    delete_conversation(conversa_id)
+    PENDING_SESSIONS.pop(conversa_id, None)
+    SESSION_LAST_PHOTO.pop(conversa_id, None)
+    return Response(status_code=204)
 
 
 @app.get("/conversas/{conversa_id}/mensagens")
@@ -505,8 +537,9 @@ def get_irrigations() -> List[Dict[str, Any]]:
 
 
 @app.get("/foto/{foto_id}")
+@app.get("/fotos/{foto_id}")
 def get_uploaded_photo(foto_id: str) -> FileResponse:
-    """Serve an uploaded or sample photo by foto_id for rendering on the web UI canvas."""
+    """Serve an uploaded or sample photo by foto_id (supports /foto/{id} and /fotos/{id})."""
     try:
         path = resolve_photo_path(foto_id)
     except VisionSegmentationError as exc:
@@ -519,15 +552,16 @@ async def post_photo(
     sessao: str = Form(default="default"),
     imagem: Optional[UploadFile] = File(default=None),
     foto: Optional[UploadFile] = File(default=None),
+    ficheiro: Optional[UploadFile] = File(default=None),
     file: Optional[UploadFile] = File(default=None),
 ) -> Dict[str, Any]:
-    """Receive a photo via multipart/form-data, save it locally, and return foto_id."""
+    """Receive a photo via multipart/form-data, save it in UPLOADS_DIR, and return foto_id."""
     global PHOTO_COUNTER
-    upload = imagem or foto or file
+    upload = imagem or foto or ficheiro or file
     if upload is None:
         raise HTTPException(
             status_code=422,
-            detail="Nenhum ficheiro de imagem enviado (use o campo 'imagem').",
+            detail="Nenhum ficheiro de imagem enviado (use o campo 'imagem' ou 'ficheiro').",
         )
 
     raw_bytes = await upload.read()
@@ -577,7 +611,7 @@ async def post_voice(
     if upload is None:
         raise HTTPException(
             status_code=422,
-            detail="Nenhum ficheiro de áudio enviado (use o campo 'audio').",
+            detail="Nenhum ficheiro de áudio enviado (use o campo 'audio' ou 'ficheiro').",
         )
 
     raw_bytes = await upload.read()
@@ -856,6 +890,7 @@ def post_confirm(payload: ConfirmActionRequest) -> Dict[str, Any]:
 
     return {
         "estado": "confirmado" if payload.confirmar else "cancelado",
+        "estado_accao": db_action_state,
         "sessao": session_id,
         "conversa_id": session_id,
         "confirmar": payload.confirmar,
