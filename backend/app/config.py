@@ -15,7 +15,7 @@ BASE_DIR: Path = BACKEND_DIR.parent
 ENV_FILE_PATH: Path = BASE_DIR / ".env"
 
 DATA_DIR: Path = BACKEND_DIR / "data"
-DB_PATH: Path = DATA_DIR / "nonglink.db"
+DB_PATH: Path = Path(os.environ.get("NONGLINK_DB_PATH") or (DATA_DIR / "nonglink.db"))
 UPLOADS_DIR: Path = DATA_DIR / "uploads"
 SAMPLES_DIR: Path = DATA_DIR / "amostras"
 DEFAULT_OUTPUT_BOXES_PATH: Path = SAMPLES_DIR / "saida_caixas.jpg"

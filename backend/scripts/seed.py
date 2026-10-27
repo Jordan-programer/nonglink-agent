@@ -51,7 +51,7 @@ def seed_database(db_path: Path = DB_PATH) -> Dict[str, Any]:
             db_path=db_path,
         )
 
-    if len(list_listings(db_path)) == 0:
+    if len(list_listings(db_path=db_path)) == 0:
         insert_listing(
             cultura="tomate (DEMO FICTÍCIO)",
             quantidade_kg=100.0,
@@ -65,7 +65,7 @@ def seed_database(db_path: Path = DB_PATH) -> Dict[str, Any]:
             db_path=db_path,
         )
 
-    if len(list_irrigations(db_path)) == 0:
+    if len(list_irrigations(db_path=db_path)) == 0:
         insert_irrigation(
             parcela="Parcela Demo A (FICTÍCIO)",
             hora="06:00",
@@ -79,8 +79,8 @@ def seed_database(db_path: Path = DB_PATH) -> Dict[str, Any]:
 
     return {
         "precos_culturas": list_crop_prices(db_path),
-        "anuncios": list_listings(db_path),
-        "regas": list_irrigations(db_path),
+        "anuncios": list_listings(db_path=db_path),
+        "regas": list_irrigations(db_path=db_path),
     }
 
 

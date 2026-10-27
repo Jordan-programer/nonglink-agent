@@ -12,9 +12,13 @@ Manages tables with non-destructive migrations:
   )
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
 import json
+import os
 from pathlib import Path
+import secrets
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple, Union
 import uuid
@@ -22,6 +26,14 @@ import uuid
 from app.config import DB_PATH
 
 DB_FILE_PATH: Path = DB_PATH
+
+
+def _resolve_db_path(db_path: Union[str, Path] = DB_FILE_PATH) -> Path:
+    """Resolve the active SQLite file path, honoring NONGLINK_DB_PATH when using default."""
+    env_override = os.environ.get("NONGLINK_DB_PATH")
+    if env_override and Path(db_path) == DB_PATH:
+        return Path(env_override)
+    return Path(db_path)
 
 VALID_MESSAGE_ROLES = ("utilizador", "agente")
 VALID_ACTION_STATES = ("pendente", "confirmada", "cancelada")
@@ -64,11 +76,48 @@ def _utc_now_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def _format_utc_dt(dt: datetime) -> str:
+    """Format a datetime as UTC timestamp string."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _parse_utc_str(ts: str) -> Optional[datetime]:
+    """Parse a UTC timestamp string into a timezone-aware UTC datetime."""
+    cleaned = (ts or "").strip()
+    if not cleaned:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S UTC", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(cleaned, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    try:
+        dt = datetime.fromisoformat(cleaned)
+        return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _hash_session_token(token: str) -> str:
+    """Return the hex SHA-256 digest of a session token (never store raw tokens)."""
+    return hashlib.sha256((token or "").strip().encode("utf-8")).hexdigest()
+
+
+class _ClosingConnection(sqlite3.Connection):
+    """SQLite connection that commits/rolls back AND closes when exiting a with-block."""
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        try:
+            return super().__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self.close()
+
+
 def get_connection(db_path: Union[str, Path] = DB_FILE_PATH) -> sqlite3.Connection:
     """Create a SQLite connection with row factory configured as dict-like Row."""
-    path_obj = Path(db_path)
+    path_obj = _resolve_db_path(db_path)
     path_obj.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path_obj))
+    conn = sqlite3.connect(str(path_obj), factory=_ClosingConnection)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -95,6 +144,7 @@ def migrate_db(db_path: Union[str, Path] = DB_FILE_PATH) -> None:
             """
             CREATE TABLE IF NOT EXISTS anuncios (
                 id TEXT PRIMARY KEY,
+                utilizador_id TEXT NULL,
                 cultura TEXT NOT NULL,
                 quantidade_kg REAL NOT NULL,
                 preco_kz_kg REAL NOT NULL,
@@ -106,6 +156,7 @@ def migrate_db(db_path: Union[str, Path] = DB_FILE_PATH) -> None:
             """
             CREATE TABLE IF NOT EXISTS regas (
                 id TEXT PRIMARY KEY,
+                utilizador_id TEXT NULL,
                 parcela TEXT NOT NULL,
                 hora TEXT NOT NULL,
                 criado_em TEXT NOT NULL
@@ -125,9 +176,20 @@ def migrate_db(db_path: Union[str, Path] = DB_FILE_PATH) -> None:
             """
             CREATE TABLE IF NOT EXISTS conversas (
                 id TEXT PRIMARY KEY,
+                utilizador_id TEXT NULL,
                 titulo TEXT NOT NULL,
                 criada_em TEXT NOT NULL,
                 atualizada_em TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fotos (
+                id TEXT PRIMARY KEY,
+                utilizador_id TEXT NULL,
+                caminho TEXT NOT NULL,
+                criado_em TEXT NOT NULL
             )
             """
         )
@@ -149,15 +211,105 @@ def migrate_db(db_path: Union[str, Path] = DB_FILE_PATH) -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS utilizadores (
+                id TEXT PRIMARY KEY,
+                nome TEXT NOT NULL,
+                email TEXT NOT NULL UNIQUE,
+                senha_hash TEXT NOT NULL,
+                criado_em TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessoes_auth (
+                token TEXT PRIMARY KEY,
+                token_hash TEXT NULL,
+                utilizador_id TEXT NOT NULL,
+                criado_em TEXT NOT NULL,
+                expira_em TEXT NOT NULL,
+                FOREIGN KEY (utilizador_id) REFERENCES utilizadores(id)
+            )
+            """
+        )
 
+        _ensure_columns(
+            conn,
+            "sessoes_auth",
+            [
+                ("token_hash", "TEXT NULL"),
+                ("expira_em", "TEXT NOT NULL DEFAULT ''"),
+            ],
+        )
+        # Invalidate any legacy plaintext sessions or sessions without expiration
+        conn.execute(
+            """
+            DELETE FROM sessoes_auth
+            WHERE expira_em IS NULL
+               OR expira_em = ''
+               OR length(token) != 64
+               OR token GLOB '*[^0-9a-fA-F]*'
+            """
+        )
+
+        _ensure_columns(
+            conn,
+            "anuncios",
+            [("utilizador_id", "TEXT NULL")],
+        )
+        _ensure_columns(
+            conn,
+            "regas",
+            [("utilizador_id", "TEXT NULL")],
+        )
         _ensure_columns(
             conn,
             "conversas",
             [
                 ("id", "TEXT"),
+                ("utilizador_id", "TEXT NULL"),
                 ("titulo", "TEXT NOT NULL DEFAULT 'Conversa'"),
                 ("criada_em", "TEXT NOT NULL DEFAULT ''"),
                 ("atualizada_em", "TEXT NOT NULL DEFAULT ''"),
+            ],
+        )
+        conv_cols = conn.execute("PRAGMA table_info(conversas)").fetchall()
+        for col in conv_cols:
+            if col["name"] == "utilizador_id" and col["notnull"]:
+                conn.execute("PRAGMA foreign_keys=OFF")
+                conn.execute(
+                    """
+                    CREATE TABLE conversas_migrated (
+                        id TEXT PRIMARY KEY,
+                        utilizador_id TEXT NULL,
+                        titulo TEXT NOT NULL,
+                        criada_em TEXT NOT NULL,
+                        atualizada_em TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO conversas_migrated (id, utilizador_id, titulo, criada_em, atualizada_em)
+                    SELECT id,
+                           CASE WHEN utilizador_id IN ('USR-DEMO-0001', '') THEN NULL ELSE utilizador_id END,
+                           titulo, criada_em, atualizada_em
+                    FROM conversas
+                    """
+                )
+                conn.execute("DROP TABLE conversas")
+                conn.execute("ALTER TABLE conversas_migrated RENAME TO conversas")
+                conn.execute("PRAGMA foreign_keys=ON")
+                break
+        _ensure_columns(
+            conn,
+            "fotos",
+            [
+                ("utilizador_id", "TEXT NULL"),
+                ("caminho", "TEXT NOT NULL DEFAULT ''"),
+                ("criado_em", "TEXT NOT NULL DEFAULT ''"),
             ],
         )
         _ensure_columns(
@@ -177,9 +329,17 @@ def migrate_db(db_path: Union[str, Path] = DB_FILE_PATH) -> None:
         conn.commit()
 
 
+_MIGRATED_DB_PATHS: set[str] = set()
+
+
 def init_db(db_path: Union[str, Path] = DB_FILE_PATH) -> None:
     """Initialize and migrate required SQLite tables without deleting existing data."""
-    migrate_db(db_path)
+    target = _resolve_db_path(db_path)
+    resolved = str(target.resolve())
+    if resolved in _MIGRATED_DB_PATHS and target.exists():
+        return
+    migrate_db(target)
+    _MIGRATED_DB_PATHS.add(resolved)
 
 
 def _next_formatted_id(
@@ -201,6 +361,7 @@ def insert_listing(
     cultura: str,
     quantidade_kg: float,
     preco_kz_kg: float,
+    utilizador_id: Optional[str] = None,
     db_path: Union[str, Path] = DB_FILE_PATH,
 ) -> Dict[str, Any]:
     """Insert a confirmed listing into the 'anuncios' table and return its record."""
@@ -210,14 +371,22 @@ def insert_listing(
         listing_id = _next_formatted_id(conn, "anuncios", "NL")
         conn.execute(
             """
-            INSERT INTO anuncios (id, cultura, quantidade_kg, preco_kz_kg, criado_em)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO anuncios (id, utilizador_id, cultura, quantidade_kg, preco_kz_kg, criado_em)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (listing_id, cultura, float(quantidade_kg), float(preco_kz_kg), created_at),
+            (
+                listing_id,
+                utilizador_id,
+                cultura,
+                float(quantidade_kg),
+                float(preco_kz_kg),
+                created_at,
+            ),
         )
         conn.commit()
     return {
         "id": listing_id,
+        "utilizador_id": utilizador_id,
         "cultura": cultura,
         "quantidade_kg": float(quantidade_kg),
         "preco_kz_kg": float(preco_kz_kg),
@@ -228,6 +397,7 @@ def insert_listing(
 def insert_irrigation(
     parcela: str,
     hora: str,
+    utilizador_id: Optional[str] = None,
     db_path: Union[str, Path] = DB_FILE_PATH,
 ) -> Dict[str, Any]:
     """Insert a confirmed irrigation schedule into the 'regas' table and return its record."""
@@ -237,38 +407,139 @@ def insert_irrigation(
         irrigation_id = _next_formatted_id(conn, "regas", "REGA")
         conn.execute(
             """
-            INSERT INTO regas (id, parcela, hora, criado_em)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO regas (id, utilizador_id, parcela, hora, criado_em)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (irrigation_id, parcela, hora, created_at),
+            (irrigation_id, utilizador_id, parcela, hora, created_at),
         )
         conn.commit()
     return {
         "id": irrigation_id,
+        "utilizador_id": utilizador_id,
         "parcela": parcela,
         "hora": hora,
         "criado_em": created_at,
     }
 
 
-def list_listings(db_path: Union[str, Path] = DB_FILE_PATH) -> List[Dict[str, Any]]:
-    """Return all rows from the 'anuncios' table ordered from newest to oldest."""
+def list_listings(
+    utilizador_id: Optional[Union[str, Path]] = None,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> List[Dict[str, Any]]:
+    """Return rows from the 'anuncios' table ordered from newest to oldest, scoped to utilizador_id."""
+    if isinstance(utilizador_id, Path):
+        db_path = utilizador_id
+        utilizador_id = None
     init_db(db_path)
     with get_connection(db_path) as conn:
-        rows = conn.execute(
-            "SELECT id, cultura, quantidade_kg, preco_kz_kg, criado_em FROM anuncios ORDER BY id DESC"
-        ).fetchall()
+        if utilizador_id is not None:
+            rows = conn.execute(
+                """
+                SELECT id, utilizador_id, cultura, quantidade_kg, preco_kz_kg, criado_em
+                FROM anuncios
+                WHERE utilizador_id = ?
+                ORDER BY id DESC
+                """,
+                (str(utilizador_id),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, utilizador_id, cultura, quantidade_kg, preco_kz_kg, criado_em FROM anuncios ORDER BY id DESC"
+            ).fetchall()
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        qty = float(item.get("quantidade_kg") or 0.0)
+        unit_price = float(item.get("preco_kz_kg") or 0.0)
+        item["preco_kg"] = unit_price
+        item["total"] = round(qty * unit_price, 2)
+        item["numero"] = item["id"]
+        result.append(item)
+    return result
+
+
+def list_irrigations(
+    utilizador_id: Optional[Union[str, Path]] = None,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> List[Dict[str, Any]]:
+    """Return rows from the 'regas' table ordered from newest to oldest, scoped to utilizador_id."""
+    if isinstance(utilizador_id, Path):
+        db_path = utilizador_id
+        utilizador_id = None
+    init_db(db_path)
+    with get_connection(db_path) as conn:
+        if utilizador_id is not None:
+            rows = conn.execute(
+                """
+                SELECT id, utilizador_id, parcela, hora, criado_em
+                FROM regas
+                WHERE utilizador_id = ?
+                ORDER BY id DESC
+                """,
+                (str(utilizador_id),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, utilizador_id, parcela, hora, criado_em FROM regas ORDER BY id DESC"
+            ).fetchall()
     return [dict(row) for row in rows]
 
 
-def list_irrigations(db_path: Union[str, Path] = DB_FILE_PATH) -> List[Dict[str, Any]]:
-    """Return all rows from the 'regas' table ordered from newest to oldest."""
+def insert_photo(
+    utilizador_id: Optional[str],
+    caminho: Union[str, Path],
+    foto_id: Optional[str] = None,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> Dict[str, Any]:
+    """Insert a photo record with a random secrets.token_urlsafe(12) ID and utilizador_id."""
     init_db(db_path)
+    created_at = _utc_now_str()
+    clean_id = (foto_id or secrets.token_urlsafe(12)).strip()
+    path_str = str(caminho)
     with get_connection(db_path) as conn:
-        rows = conn.execute(
-            "SELECT id, parcela, hora, criado_em FROM regas ORDER BY id DESC"
-        ).fetchall()
-    return [dict(row) for row in rows]
+        conn.execute(
+            """
+            INSERT INTO fotos (id, utilizador_id, caminho, criado_em)
+            VALUES (?, ?, ?, ?)
+            """,
+            (clean_id, utilizador_id, path_str, created_at),
+        )
+        conn.commit()
+    return {
+        "id": clean_id,
+        "foto_id": clean_id,
+        "utilizador_id": utilizador_id,
+        "caminho": path_str,
+        "criado_em": created_at,
+    }
+
+
+def get_photo(
+    foto_id: str,
+    utilizador_id: Optional[str] = None,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> Optional[Dict[str, Any]]:
+    """Fetch a photo record by ID, strictly verifying utilizador_id ownership when provided."""
+    init_db(db_path)
+    clean_id = (foto_id or "").strip()
+    if not clean_id:
+        return None
+    with get_connection(db_path) as conn:
+        if utilizador_id is not None:
+            row = conn.execute(
+                """
+                SELECT id, utilizador_id, caminho, criado_em
+                FROM fotos
+                WHERE id = ? AND utilizador_id = ?
+                """,
+                (clean_id, utilizador_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id, utilizador_id, caminho, criado_em FROM fotos WHERE id = ?",
+                (clean_id,),
+            ).fetchone()
+    return dict(row) if row else None
 
 
 def upsert_crop_price(
@@ -321,30 +592,43 @@ def list_crop_prices(db_path: Union[str, Path] = DB_FILE_PATH) -> List[Dict[str,
 def create_conversation(
     titulo: str = "Nova conversa",
     conversation_id: Optional[str] = None,
+    utilizador_id: Optional[str] = None,
     db_path: Union[str, Path] = DB_FILE_PATH,
 ) -> Dict[str, Any]:
-    """Create a new conversation in 'conversas' with a UUID text ID."""
+    """Create a new conversation in 'conversas' scoped to a specific utilizador_id."""
     init_db(db_path)
     conv_id = (conversation_id or str(uuid.uuid4())).strip()
+    owner_id = utilizador_id.strip() if utilizador_id else None
     now = _utc_now_str()
     clean_title = (titulo or "Nova conversa").strip()
     with get_connection(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO conversas (id, titulo, criada_em, atualizada_em)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                atualizada_em = excluded.atualizada_em
-            """,
-            (conv_id, clean_title, now, now),
-        )
+        existing = conn.execute(
+            "SELECT id, utilizador_id, titulo, criada_em, atualizada_em FROM conversas WHERE id = ?",
+            (conv_id,),
+        ).fetchone()
+        if existing is not None:
+            if owner_id is not None and existing["utilizador_id"] != owner_id:
+                raise PermissionError("Conversa não encontrada.")
+            conn.execute(
+                "UPDATE conversas SET atualizada_em = ? WHERE id = ?",
+                (now, conv_id),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO conversas (id, utilizador_id, titulo, criada_em, atualizada_em)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (conv_id, owner_id, clean_title, now, now),
+            )
         row = conn.execute(
-            "SELECT id, titulo, criada_em, atualizada_em FROM conversas WHERE id = ?",
+            "SELECT id, utilizador_id, titulo, criada_em, atualizada_em FROM conversas WHERE id = ?",
             (conv_id,),
         ).fetchone()
         conn.commit()
     return dict(row) if row else {
         "id": conv_id,
+        "utilizador_id": owner_id,
         "titulo": clean_title,
         "criada_em": now,
         "atualizada_em": now,
@@ -352,54 +636,95 @@ def create_conversation(
 
 
 def get_conversation(
-    conversation_id: str, db_path: Union[str, Path] = DB_FILE_PATH
+    conversation_id: str,
+    utilizador_id: Optional[str] = None,
+    db_path: Union[str, Path] = DB_FILE_PATH,
 ) -> Optional[Dict[str, Any]]:
-    """Fetch a single conversation by ID from 'conversas'."""
+    """Fetch a single conversation by ID from 'conversas', strictly verifying ownership when utilizador_id is given."""
     init_db(db_path)
     with get_connection(db_path) as conn:
-        row = conn.execute(
-            "SELECT id, titulo, criada_em, atualizada_em FROM conversas WHERE id = ?",
-            (conversation_id,),
-        ).fetchone()
+        if utilizador_id is not None:
+            row = conn.execute(
+                """
+                SELECT id, utilizador_id, titulo, criada_em, atualizada_em
+                FROM conversas
+                WHERE id = ? AND utilizador_id = ?
+                """,
+                (conversation_id, utilizador_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id, utilizador_id, titulo, criada_em, atualizada_em FROM conversas WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
     return dict(row) if row else None
 
 
 def ensure_conversation(
     conversation_id: Optional[str] = None,
     titulo: str = "Nova conversa",
+    utilizador_id: Optional[str] = None,
     db_path: Union[str, Path] = DB_FILE_PATH,
 ) -> Dict[str, Any]:
-    """Return existing conversation or create it if it does not exist."""
+    """Return existing conversation (verifying ownership) or create it if it does not exist."""
     if conversation_id:
-        existing = get_conversation(conversation_id, db_path=db_path)
-        if existing is not None:
-            return existing
+        raw_existing = get_conversation(conversation_id, db_path=db_path)
+        if raw_existing is not None:
+            if utilizador_id is not None and raw_existing.get("utilizador_id") != utilizador_id:
+                raise PermissionError("Conversa não encontrada.")
+            return raw_existing
     return create_conversation(
-        titulo=titulo, conversation_id=conversation_id, db_path=db_path
+        titulo=titulo,
+        conversation_id=conversation_id,
+        utilizador_id=utilizador_id,
+        db_path=db_path,
     )
 
 
 def update_conversation_title(
-    conversation_id: str, titulo: str, db_path: Union[str, Path] = DB_FILE_PATH
+    conversation_id: str,
+    titulo: str,
+    utilizador_id: Optional[str] = None,
+    db_path: Union[str, Path] = DB_FILE_PATH,
 ) -> Optional[Dict[str, Any]]:
     """Update the title and atualizada_em timestamp of a conversation."""
     init_db(db_path)
     now = _utc_now_str()
     with get_connection(db_path) as conn:
-        conn.execute(
-            "UPDATE conversas SET titulo = ?, atualizada_em = ? WHERE id = ?",
-            (titulo.strip(), now, conversation_id),
-        )
-        conn.commit()
-    return get_conversation(conversation_id, db_path=db_path)
+        if utilizador_id is not None:
+            cursor = conn.execute(
+                "UPDATE conversas SET titulo = ?, atualizada_em = ? WHERE id = ? AND utilizador_id = ?",
+                (titulo.strip(), now, conversation_id, utilizador_id),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                return None
+        else:
+            conn.execute(
+                "UPDATE conversas SET titulo = ?, atualizada_em = ? WHERE id = ?",
+                (titulo.strip(), now, conversation_id),
+            )
+            conn.commit()
+    return get_conversation(
+        conversation_id, utilizador_id=utilizador_id, db_path=db_path
+    )
 
 
 def delete_conversation(
-    conversation_id: str, db_path: Union[str, Path] = DB_FILE_PATH
+    conversation_id: str,
+    utilizador_id: Optional[str] = None,
+    db_path: Union[str, Path] = DB_FILE_PATH,
 ) -> bool:
     """Delete a conversation and its messages from SQLite."""
     init_db(db_path)
     with get_connection(db_path) as conn:
+        if utilizador_id:
+            owner_check = conn.execute(
+                "SELECT id FROM conversas WHERE id = ? AND utilizador_id = ?",
+                (conversation_id, utilizador_id),
+            ).fetchone()
+            if owner_check is None:
+                return False
         conn.execute("DELETE FROM mensagens WHERE conversa_id = ?", (conversation_id,))
         cursor = conn.execute("DELETE FROM conversas WHERE id = ?", (conversation_id,))
         conn.commit()
@@ -407,16 +732,41 @@ def delete_conversation(
 
 
 def list_conversations(
-    q: Optional[str] = None, db_path: Union[str, Path] = DB_FILE_PATH
+    q: Optional[str] = None,
+    utilizador_id: Optional[str] = None,
+    db_path: Union[str, Path] = DB_FILE_PATH,
 ) -> List[Dict[str, Any]]:
-    """Return all conversations ordered by atualizada_em DESC, optionally filtered by query q."""
+    """Return conversations ordered by atualizada_em DESC, scoped to utilizador_id when provided."""
     init_db(db_path)
     with get_connection(db_path) as conn:
-        if q and q.strip():
+        if utilizador_id:
+            if q and q.strip():
+                like_pattern = f"%{q.strip()}%"
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT c.id, c.utilizador_id, c.titulo, c.criada_em, c.atualizada_em
+                    FROM conversas c
+                    LEFT JOIN mensagens m ON m.conversa_id = c.id
+                    WHERE c.utilizador_id = ? AND (c.titulo LIKE ? OR m.texto LIKE ?)
+                    ORDER BY c.atualizada_em DESC, c.criada_em DESC
+                    """,
+                    (utilizador_id, like_pattern, like_pattern),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, utilizador_id, titulo, criada_em, atualizada_em
+                    FROM conversas
+                    WHERE utilizador_id = ?
+                    ORDER BY atualizada_em DESC, criada_em DESC
+                    """,
+                    (utilizador_id,),
+                ).fetchall()
+        elif q and q.strip():
             like_pattern = f"%{q.strip()}%"
             rows = conn.execute(
                 """
-                SELECT DISTINCT c.id, c.titulo, c.criada_em, c.atualizada_em
+                SELECT DISTINCT c.id, c.utilizador_id, c.titulo, c.criada_em, c.atualizada_em
                 FROM conversas c
                 LEFT JOIN mensagens m ON m.conversa_id = c.id
                 WHERE c.titulo LIKE ? OR m.texto LIKE ?
@@ -426,7 +776,7 @@ def list_conversations(
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, titulo, criada_em, atualizada_em FROM conversas ORDER BY atualizada_em DESC, criada_em DESC"
+                "SELECT id, utilizador_id, titulo, criada_em, atualizada_em FROM conversas ORDER BY atualizada_em DESC, criada_em DESC"
             ).fetchall()
     return [dict(row) for row in rows]
 
@@ -464,6 +814,7 @@ def insert_message(
     estado_accao: Optional[str] = None,
     resultado_id: Optional[str] = None,
     anexo_json: Optional[Any] = None,
+    utilizador_id: Optional[str] = None,
     db_path: Union[str, Path] = DB_FILE_PATH,
 ) -> Dict[str, Any]:
     """Insert a message into 'mensagens' and update the parent conversation timestamp."""
@@ -476,7 +827,7 @@ def insert_message(
             f"Invalid estado_accao '{estado_accao}'. Must be one of {VALID_ACTION_STATES} or None."
         )
 
-    ensure_conversation(conversa_id, db_path=db_path)
+    ensure_conversation(conversa_id, utilizador_id=utilizador_id, db_path=db_path)
 
     serialized_accao: Optional[str] = None
     if accao_json is not None:
@@ -596,6 +947,507 @@ def list_messages(
     return [_deserialize_message_row(row) for row in rows]
 
 
+PBKDF2_ITERATIONS = 600_000
+LEGACY_PBKDF2_ITERATIONS = 100_000
+
+
+def _hash_password(
+    password: str,
+    salt: Optional[str] = None,
+    iterations: int = PBKDF2_ITERATIONS,
+) -> str:
+    """Hash a password with PBKDF2-HMAC-SHA256 (>= 600,000 iterations) and a random hex salt."""
+    salt_str = salt or secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt_str.encode("utf-8"),
+        int(iterations),
+    )
+    return f"pbkdf2_sha256${int(iterations)}${salt_str}${dk.hex()}"
+
+
+def _needs_rehash(stored_hash: str) -> bool:
+    """Return True if stored_hash uses legacy format or fewer than PBKDF2_ITERATIONS."""
+    if not stored_hash or "$" not in stored_hash:
+        return False
+    parts = stored_hash.split("$")
+    if len(parts) == 4 and parts[0] == "pbkdf2_sha256":
+        try:
+            return int(parts[1]) < PBKDF2_ITERATIONS
+        except ValueError:
+            return True
+    return True
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    """Verify a plaintext password against a stored PBKDF2-HMAC-SHA256 hash using hmac.compare_digest."""
+    if not password or not stored_hash or "$" not in stored_hash:
+        return False
+    parts = stored_hash.split("$")
+    if len(parts) == 4 and parts[0] == "pbkdf2_sha256":
+        try:
+            iterations = int(parts[1])
+        except ValueError:
+            return False
+        salt_str, expected_hex = parts[2], parts[3]
+        dk_hex = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt_str.encode("utf-8"),
+            iterations,
+        ).hex()
+        return hmac.compare_digest(dk_hex, expected_hex)
+    if len(parts) == 2:
+        salt_str, expected_hex = parts[0], parts[1]
+        dk_hex = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt_str.encode("utf-8"),
+            LEGACY_PBKDF2_ITERATIONS,
+        ).hex()
+        return hmac.compare_digest(dk_hex, expected_hex)
+    return False
+
+
+def create_guest_user(
+    seed_sample_data: bool = False,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> Dict[str, Any]:
+    """Create a new temporary guest user (convidado-xxxx@convidado.nonglink) without password."""
+    init_db(db_path)
+    now = _utc_now_str()
+    suffix = secrets.token_hex(4).lower()
+    guest_id = f"USR-GUEST-{suffix.upper()}"
+    guest_email = f"convidado-{suffix}@convidado.nonglink"
+    guest_name = f"Convidado ({suffix[:4]})"
+
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO utilizadores (id, nome, email, senha_hash, criado_em)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (guest_id, guest_name, guest_email, "", now),
+        )
+        conn.commit()
+
+    if seed_sample_data:
+        insert_listing(
+            cultura="tomate (DEMO FICTÍCIO)",
+            quantidade_kg=50.0,
+            preco_kz_kg=850.0,
+            utilizador_id=guest_id,
+            db_path=db_path,
+        )
+        insert_irrigation(
+            parcela="Parcela Demo (FICTÍCIO)",
+            hora="06:30",
+            utilizador_id=guest_id,
+            db_path=db_path,
+        )
+
+    return {
+        "id": guest_id,
+        "nome": guest_name,
+        "email": guest_email,
+        "criado_em": now,
+    }
+
+
+def create_user(
+    nome: str,
+    email: str,
+    senha: str,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> Dict[str, Any]:
+    """Register a new user in 'utilizadores' and return its public profile."""
+    init_db(db_path)
+    clean_name = (nome or "").strip()
+    clean_email = (email or "").strip().lower()
+    if not clean_name:
+        raise ValueError("O nome é obrigatório.")
+    if not clean_email or "@" not in clean_email:
+        raise ValueError("Introduza um email válido.")
+    if not senha or len(senha) < 8:
+        raise ValueError("A palavra-passe deve ter pelo menos 8 caracteres.")
+
+    now = _utc_now_str()
+    user_id = f"USR-{uuid.uuid4().hex[:8].upper()}"
+    pwd_hash = _hash_password(senha)
+
+    with get_connection(db_path) as conn:
+        existing = conn.execute(
+            "SELECT id FROM utilizadores WHERE LOWER(email) = ?",
+            (clean_email,),
+        ).fetchone()
+        if existing is not None:
+            raise ValueError("Já existe uma conta registada com este email.")
+        conn.execute(
+            """
+            INSERT INTO utilizadores (id, nome, email, senha_hash, criado_em)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, clean_name, clean_email, pwd_hash, now),
+        )
+        conn.commit()
+
+    return {
+        "id": user_id,
+        "nome": clean_name,
+        "email": clean_email,
+        "criado_em": now,
+    }
+
+
+def authenticate_user(
+    email: str,
+    senha: str,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> Optional[Dict[str, Any]]:
+    """Verify email and password against 'utilizadores', rehashing legacy hashes on login."""
+    init_db(db_path)
+    clean_email = (email or "").strip().lower()
+    if not clean_email or not senha:
+        return None
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT id, nome, email, senha_hash, criado_em FROM utilizadores WHERE LOWER(email) = ?",
+            (clean_email,),
+        ).fetchone()
+        if row is None:
+            return None
+        stored_hash = str(row["senha_hash"] or "")
+        if not _verify_password(senha, stored_hash):
+            return None
+        if _needs_rehash(stored_hash):
+            upgraded_hash = _hash_password(senha, iterations=PBKDF2_ITERATIONS)
+            conn.execute(
+                "UPDATE utilizadores SET senha_hash = ?, email = ? WHERE id = ?",
+                (upgraded_hash, clean_email, str(row["id"])),
+            )
+            conn.commit()
+    return {
+        "id": str(row["id"]),
+        "nome": str(row["nome"]),
+        "email": clean_email,
+        "criado_em": str(row["criado_em"]),
+    }
+
+
+def get_user_by_id(
+    user_id: str, db_path: Union[str, Path] = DB_FILE_PATH
+) -> Optional[Dict[str, Any]]:
+    """Return user public profile by ID."""
+    init_db(db_path)
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT id, nome, email, criado_em FROM utilizadores WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_session_token(
+    utilizador_id: str,
+    is_guest: bool = False,
+    expira_em: Optional[str] = None,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> str:
+    """Create a session token, store only its SHA-256 digest and expiration in 'sessoes_auth', and return raw token."""
+    init_db(db_path)
+    raw_token = secrets.token_urlsafe(32)
+    token_sha256 = _hash_session_token(raw_token)
+    now_dt = datetime.now(timezone.utc)
+    now_str = _format_utc_dt(now_dt)
+    if expira_em is not None:
+        expires_str = expira_em
+    else:
+        ttl = timedelta(hours=24) if is_guest else timedelta(days=7)
+        expires_str = _format_utc_dt(now_dt + ttl)
+
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessoes_auth (token, token_hash, utilizador_id, criado_em, expira_em)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (token_sha256, token_sha256, utilizador_id, now_str, expires_str),
+        )
+        conn.commit()
+    return raw_token
+
+
+def get_user_by_token(
+    token: str, db_path: Union[str, Path] = DB_FILE_PATH
+) -> Optional[Dict[str, Any]]:
+    """Resolve a Bearer token via its SHA-256 digest; reject and delete expired sessions."""
+    if not token or not token.strip():
+        return None
+    init_db(db_path)
+    token_sha256 = _hash_session_token(token)
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT s.token AS session_key, s.expira_em, u.id, u.nome, u.email, u.criado_em
+            FROM sessoes_auth s
+            JOIN utilizadores u ON u.id = s.utilizador_id
+            WHERE s.token = ? OR s.token_hash = ?
+            """,
+            (token_sha256, token_sha256),
+        ).fetchone()
+        if row is None:
+            return None
+
+        exp_dt = _parse_utc_str(str(row["expira_em"] or ""))
+        if exp_dt is None or datetime.now(timezone.utc) >= exp_dt:
+            conn.execute(
+                "DELETE FROM sessoes_auth WHERE token = ? OR token_hash = ?",
+                (token_sha256, token_sha256),
+            )
+            conn.commit()
+            return None
+
+    return {
+        "id": str(row["id"]),
+        "nome": str(row["nome"]),
+        "email": str(row["email"]),
+        "criado_em": str(row["criado_em"]),
+    }
+
+
+def update_user_name(
+    user_id: str,
+    nome: str,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> Optional[Dict[str, Any]]:
+    """Update user's name without modifying email or password."""
+    init_db(db_path)
+    clean_name = (nome or "").strip()
+    if not clean_name or len(clean_name) > 60:
+        raise ValueError("O nome deve ter entre 1 e 60 caracteres.")
+    if any(ord(c) < 32 for c in clean_name):
+        raise ValueError("O nome contém caracteres de controlo inválidos.")
+
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE utilizadores SET nome = ? WHERE id = ?",
+            (clean_name, user_id),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT id, nome, email, criado_em FROM utilizadores WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def update_user_password(
+    user_id: str,
+    senha_actual: str,
+    senha_nova: str,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> None:
+    """Verify current password, update to new password with PBKDF2 (600k iters), and invalidate other sessions."""
+    init_db(db_path)
+    if not senha_nova or len(senha_nova) < 8:
+        raise ValueError("A nova palavra-passe deve ter pelo menos 8 caracteres.")
+    if senha_actual == senha_nova:
+        raise ValueError("A nova palavra-passe deve ser diferente da actual.")
+
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT id, email, senha_hash FROM utilizadores WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Utilizador não encontrado.")
+
+        stored_hash = str(row["senha_hash"] or "")
+        # Guests have empty senha_hash
+        if not stored_hash:
+            raise ValueError("Esta conta de demonstração/convidado não tem palavra-passe.")
+
+        if not _verify_password(senha_actual, stored_hash):
+            raise ValueError("Palavra-passe actual incorrecta.")
+
+        new_hash = _hash_password(senha_nova, iterations=PBKDF2_ITERATIONS)
+        conn.execute(
+            "UPDATE utilizadores SET senha_hash = ? WHERE id = ?",
+            (new_hash, user_id),
+        )
+        conn.commit()
+
+
+def invalidate_other_sessions(
+    user_id: str,
+    current_token: str,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> None:
+    """Delete all sessions of a user except the currently active one."""
+    init_db(db_path)
+    current_hash = _hash_session_token(current_token)
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "DELETE FROM sessoes_auth WHERE utilizador_id = ? AND token != ? AND token_hash != ?",
+            (user_id, current_hash, current_hash),
+        )
+        conn.commit()
+
+
+def invalidate_all_user_sessions(
+    user_id: str,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> None:
+    """Delete all sessions belonging to the user."""
+    init_db(db_path)
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "DELETE FROM sessoes_auth WHERE utilizador_id = ?",
+            (user_id,),
+        )
+        conn.commit()
+
+
+def delete_all_user_conversations(
+    user_id: str,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> Tuple[int, List[str]]:
+    """Delete all conversations and messages of a user, returning deleted count and attached photo paths to delete."""
+    init_db(db_path)
+    with get_connection(db_path) as conn:
+        conv_rows = conn.execute(
+            "SELECT id FROM conversas WHERE utilizador_id = ?",
+            (user_id,),
+        ).fetchall()
+        conv_ids = [str(r["id"]) for r in conv_rows]
+        deleted_count = len(conv_ids)
+        if not conv_ids:
+            return 0, []
+
+        placeholders = ",".join(["?"] * len(conv_ids))
+        # Find messages in these conversations that reference photos
+        msg_rows = conn.execute(
+            f"SELECT anexo_json FROM mensagens WHERE conversa_id IN ({placeholders}) AND anexo_json IS NOT NULL",
+            conv_ids,
+        ).fetchall()
+
+        foto_ids = set()
+        for m in msg_rows:
+            try:
+                data = json.loads(m["anexo_json"])
+                if isinstance(data, dict):
+                    fid = data.get("foto_id") or data.get("id")
+                    if fid:
+                        foto_ids.add(str(fid).strip())
+            except Exception:
+                pass
+
+        file_paths_to_delete = []
+        if foto_ids:
+            f_placeholders = ",".join(["?"] * len(foto_ids))
+            photo_rows = conn.execute(
+                f"SELECT id, caminho FROM fotos WHERE id IN ({f_placeholders}) AND utilizador_id = ?",
+                (*foto_ids, user_id),
+            ).fetchall()
+            for pr in photo_rows:
+                if pr["caminho"]:
+                    file_paths_to_delete.append(str(pr["caminho"]))
+            conn.execute(
+                f"DELETE FROM fotos WHERE id IN ({f_placeholders}) AND utilizador_id = ?",
+                (*foto_ids, user_id),
+            )
+
+        conn.execute(
+            f"DELETE FROM mensagens WHERE conversa_id IN ({placeholders})",
+            conv_ids,
+        )
+        conn.execute(
+            f"DELETE FROM conversas WHERE id IN ({placeholders})",
+            conv_ids,
+        )
+        conn.commit()
+
+    return deleted_count, file_paths_to_delete
+
+
+def delete_user_account_and_all_data(
+    user_id: str,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> List[str]:
+    """Delete user and all associated data (conversas, mensagens, anuncios, regas, fotos, sessoes). Returns photo file paths."""
+    init_db(db_path)
+    file_paths_to_delete = []
+    with get_connection(db_path) as conn:
+        photo_rows = conn.execute(
+            "SELECT caminho FROM fotos WHERE utilizador_id = ?",
+            (user_id,),
+        ).fetchall()
+        for pr in photo_rows:
+            if pr["caminho"]:
+                file_paths_to_delete.append(str(pr["caminho"]))
+
+        # Also check messages anexo_json for any photo paths just in case
+        conv_rows = conn.execute(
+            "SELECT id FROM conversas WHERE utilizador_id = ?",
+            (user_id,),
+        ).fetchall()
+        conv_ids = [str(r["id"]) for r in conv_rows]
+
+        if conv_ids:
+            placeholders = ",".join(["?"] * len(conv_ids))
+            conn.execute(
+                f"DELETE FROM mensagens WHERE conversa_id IN ({placeholders})",
+                conv_ids,
+            )
+            conn.execute(
+                f"DELETE FROM conversas WHERE id IN ({placeholders})",
+                conv_ids,
+            )
+
+        conn.execute("DELETE FROM fotos WHERE utilizador_id = ?", (user_id,))
+        conn.execute("DELETE FROM anuncios WHERE utilizador_id = ?", (user_id,))
+        conn.execute("DELETE FROM regas WHERE utilizador_id = ?", (user_id,))
+        conn.execute("DELETE FROM sessoes_auth WHERE utilizador_id = ?", (user_id,))
+        conn.execute("DELETE FROM utilizadores WHERE id = ?", (user_id,))
+        conn.commit()
+
+    return file_paths_to_delete
+
+
+def delete_session_token(
+    token: str, db_path: Union[str, Path] = DB_FILE_PATH
+) -> None:
+    """Delete a session from 'sessoes_auth' by its SHA-256 token digest on logout."""
+    if not token or not token.strip():
+        return
+    init_db(db_path)
+    token_sha256 = _hash_session_token(token)
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "DELETE FROM sessoes_auth WHERE token = ? OR token_hash = ?",
+            (token_sha256, token_sha256),
+        )
+        conn.commit()
+
+
+def get_user_session_expiry(
+    token: str,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> Optional[str]:
+    """Return expira_em string for a valid token session."""
+    init_db(db_path)
+    token_hash = _hash_session_token(token)
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT expira_em FROM sessoes_auth WHERE token = ? OR token_hash = ?",
+            (token_hash, token_hash),
+        ).fetchone()
+        return str(row["expira_em"]) if row and row["expira_em"] else None
+
+
 listar_anuncios = list_listings
 listar_regas = list_irrigations
 criar_conversa = create_conversation
@@ -607,3 +1459,6 @@ listar_conversas = list_conversations
 inserir_mensagem = insert_message
 atualizar_estado_accao_mensagem = update_message_action
 listar_mensagens = list_messages
+criar_utilizador = create_user
+autenticar_utilizador = authenticate_user
+obter_utilizador = get_user_by_id

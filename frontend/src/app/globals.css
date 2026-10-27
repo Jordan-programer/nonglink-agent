@@ -1,0 +1,250 @@
+@import url('https://fonts.googleapis.com/css2?family=Big+Shoulders+Stencil+Display:wght@700;800&family=Instrument+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg: #FAF9F5;
+  --color-sidebar: #F0EEE6;
+  --color-sidebar-hover: #E6E3D8;
+  --color-sidebar-active: #DFDCD0;
+  --color-surface: #FFFFFF;
+  --color-user-block: #EDEAE0;
+  --color-text: #1F1E1D;
+  --color-text-secondary: #6B6A63;
+  --color-border: #E3E0D5;
+  --color-accent: #C2603C;
+  --color-accent-hover: #AD522F;
+  --color-success: #2D6A3E;
+  --color-error: #B3261E;
+  --shadow-soft: 0 2px 12px rgba(31, 30, 29, 0.06);
+  --shadow-menu: 0 6px 20px rgba(31, 30, 29, 0.12);
+
+  --font-sans: 'Instrument Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-serif: 'Newsreader', Georgia, Cambria, 'Times New Roman', Times, serif;
+  --font-stencil: 'Big Shoulders Stencil Display', Impact, 'Arial Narrow', sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: #262624;
+    --color-sidebar: #1F1E1D;
+    --color-sidebar-hover: #2B2A28;
+    --color-sidebar-active: #333230;
+    --color-surface: #30302E;
+    --color-user-block: #3A3937;
+    --color-text: #F2F1EC;
+    --color-text-secondary: #A6A49A;
+    --color-border: #3F3E3B;
+    --color-accent: #D97B57;
+    --color-accent-hover: #C46845;
+    --color-success: #5FB07A;
+    --color-error: #E5736A;
+    --shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.28);
+    --shadow-menu: 0 6px 24px rgba(0, 0, 0, 0.45);
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #262624;
+  --color-sidebar: #1F1E1D;
+  --color-sidebar-hover: #2B2A28;
+  --color-sidebar-active: #333230;
+  --color-surface: #30302E;
+  --color-user-block: #3A3937;
+  --color-text: #F2F1EC;
+  --color-text-secondary: #A6A49A;
+  --color-border: #3F3E3B;
+  --color-accent: #D97B57;
+  --color-accent-hover: #C46845;
+  --color-success: #5FB07A;
+  --color-error: #E5736A;
+  --shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.28);
+  --shadow-menu: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100dvh;
+  overflow: hidden;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Safe area padding helper */
+.safe-area-layout {
+  height: 100dvh;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* Focus styles */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Transitions */
+.transition-ui {
+  transition-property: background-color, border-color, color, opacity, transform, width;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Stamp animation (1.4 -> 1 in 200ms, once) */
+@keyframes stampLand {
+  0% {
+    transform: rotate(-6deg) scale(1.4);
+    opacity: 0.2;
+  }
+  100% {
+    transform: rotate(-6deg) scale(1);
+    opacity: 1;
+  }
+}
+
+.stamp-animate {
+  animation: stampLand 200ms cubic-bezier(0.2, 0.8, 0.2, 1) 1 forwards;
+}
+
+.stamp-static {
+  transform: rotate(-6deg) scale(1);
+}
+
+/* Pulsing dots for agent loading */
+@keyframes dotPulse {
+  0%, 80%, 100% {
+    opacity: 0.25;
+    transform: scale(0.85);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.dot-pulse-1 {
+  animation: dotPulse 1.2s infinite ease-in-out;
+  animation-delay: 0ms;
+}
+.dot-pulse-2 {
+  animation: dotPulse 1.2s infinite ease-in-out;
+  animation-delay: 200ms;
+}
+.dot-pulse-3 {
+  animation: dotPulse 1.2s infinite ease-in-out;
+  animation-delay: 400ms;
+}
+
+/* Perforated bottom edge for Talão (borda inferior picotada em CSS) */
+.talao-perforated {
+  position: relative;
+}
+
+.talao-perforated::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  bottom: -6px;
+  height: 6px;
+  background-image: radial-gradient(circle at 6px 6px, var(--color-bg) 4px, var(--color-border) 4px, var(--color-border) 5px, transparent 5px);
+  background-size: 12px 6px;
+  background-repeat: repeat-x;
+}
+
+/* Leader dots for Talão rows */
+.talao-dots {
+  flex: 1;
+  border-bottom: 1px dotted var(--color-border);
+  margin: 0 8px 4px 8px;
+  min-width: 16px;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Agent prose styling */
+.agent-prose {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--color-text);
+  max-width: 72ch;
+}
+
+.agent-prose p {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+}
+
+.agent-prose p:last-child {
+  margin-bottom: 0;
+}
+
+.agent-prose strong {
+  font-weight: 500;
+}
+
+.agent-prose ul,
+.agent-prose ol {
+  margin: 0.5rem 0 0.75rem 1.25rem;
+  padding: 0;
+}
+
+.agent-prose ul {
+  list-style-type: disc;
+}
+
+.agent-prose ol {
+  list-style-type: decimal;
+}
+
+.agent-prose li {
+  margin-bottom: 0.25rem;
+}
+
+.agent-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+}
+
+.agent-prose th,
+.agent-prose td {
+  border-bottom: 1px solid var(--color-border);
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.agent-prose th {
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

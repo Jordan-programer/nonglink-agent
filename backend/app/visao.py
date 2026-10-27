@@ -19,6 +19,7 @@ from app.config import (
     VISION_SAM_MODEL,
     get_model_api_key,
 )
+from app.db import get_photo
 
 DEFAULT_OUTPUT_IMAGE: str = str(DEFAULT_OUTPUT_BOXES_PATH)
 
@@ -261,9 +262,29 @@ def draw_boxes_on_image(
     return str(out_path)
 
 
-def resolve_photo_path(foto_id: str) -> Path:
-    """Resolve a foto_id or relative path to an existing image file in UPLOADS_DIR or SAMPLES_DIR."""
-    cleaned = foto_id.strip()
+def resolve_photo_path(
+    foto_id: str, utilizador_id: Optional[str] = None
+) -> Path:
+    """Resolve a foto_id to an image file, enforcing utilizador_id ownership when provided."""
+    cleaned = (foto_id or "").strip()
+    if not cleaned:
+        raise VisionSegmentationError("Foto não encontrada.")
+
+    if utilizador_id is not None:
+        photo_row = get_photo(cleaned, utilizador_id=utilizador_id)
+        if photo_row is None:
+            raise VisionSegmentationError("Foto não encontrada.")
+        db_path = Path(str(photo_row["caminho"]))
+        if db_path.exists() and db_path.is_file():
+            return db_path
+        raise VisionSegmentationError("Foto não encontrada.")
+
+    photo_row = get_photo(cleaned)
+    if photo_row is not None:
+        db_path = Path(str(photo_row["caminho"]))
+        if db_path.exists() and db_path.is_file():
+            return db_path
+
     direct = Path(cleaned)
     if direct.exists() and direct.is_file():
         return direct

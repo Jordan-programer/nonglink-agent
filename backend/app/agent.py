@@ -280,6 +280,7 @@ def create_listing(
     preco_kz_kg: float,
     confirmed: bool = True,
     status_label: str = "EXECUTED",
+    utilizador_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Save a marketplace listing to SQLite 'anuncios' if confirmed, and return the real ID."""
     total_kz = round(float(quantidade_kg) * float(preco_kz_kg), 2)
@@ -308,6 +309,7 @@ def create_listing(
         cultura=cultura,
         quantidade_kg=float(quantidade_kg),
         preco_kz_kg=float(preco_kz_kg),
+        utilizador_id=utilizador_id,
     )
     real_id = db_record["id"]
     result = {
@@ -334,6 +336,7 @@ def schedule_irrigation(
     hora: str,
     confirmed: bool = True,
     status_label: str = "EXECUTED",
+    utilizador_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Save an irrigation schedule to SQLite 'regas' if confirmed, and return the real ID."""
     args = {"parcela": parcela, "hora": hora}
@@ -351,7 +354,11 @@ def schedule_irrigation(
         log_action("agendar_rega", args, status_label, result)
         return result
 
-    db_record = insert_irrigation(parcela=parcela, hora=hora)
+    db_record = insert_irrigation(
+        parcela=parcela,
+        hora=hora,
+        utilizador_id=utilizador_id,
+    )
     real_id = db_record["id"]
     result = {
         "status": "executed",
@@ -370,9 +377,11 @@ def schedule_irrigation(
     return result
 
 
-def analyze_photo(foto_id: str, objecto: str) -> Dict[str, Any]:
+def analyze_photo(
+    foto_id: str, objecto: str, utilizador_id: Optional[str] = None
+) -> Dict[str, Any]:
     """Segment an image using visao.segmentar (sam-3.1) and return count, coverage, and boxes."""
-    resolved_path = resolve_photo_path(foto_id)
+    resolved_path = resolve_photo_path(foto_id, utilizador_id=utilizador_id)
     seg_result = segmentar(str(resolved_path), prompt_texto=objecto)
 
     demo_unit_weight_kg = 0.15

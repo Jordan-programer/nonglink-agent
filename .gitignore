@@ -1,13 +1,25 @@
+# Ambiente e segredos (nunca commitar chaves!)
 .env
-.env.*
-!.env.example
+.env.local
+.env.*.local
+
+# Ambientes virtuais e caches Python
 .venv/
+venv/
 __pycache__/
-node_modules/
-.next/
-dist/
-*.db
-*.log
+*.py[cod]
+*$py.class
+
+# Dados locais, base de dados SQLite, uploads, amostras e logs do backend
+backend/data/
+nonglink.db
+acoes.log
 uploads/
 amostras/
-backend/data/
+
+# Dependências e build do front-end (Next.js)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+node_modules/
+.next/

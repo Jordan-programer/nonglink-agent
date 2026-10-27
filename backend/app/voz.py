@@ -66,11 +66,11 @@ def _find_ffmpeg_executable() -> Optional[str]:
 
 
 def _convert_with_ffmpeg_to_wav_16k(audio_path: Path) -> bytes:
-    """Convert mobile audio containers (3GP/M4A/OGG/MP3/WebM) to 16 kHz mono 16-bit PCM WAV."""
+    """Convert mobile/browser audio containers (3GP/M4A/OGG/MP3/WebM) to a clean 16 kHz mono 16-bit PCM WAV."""
     ffmpeg_exe = _find_ffmpeg_executable()
     if not ffmpeg_exe:
         raise VoiceTranscriptionError(
-            f"O ficheiro '{audio_path}' está num formato de telemóvel comprimido (ex.: 3GP/M4A/OGG) "
+            f"O ficheiro '{audio_path}' está num formato comprimido (ex.: 3GP/M4A/OGG/WebM) "
             "e o endpoint /v1/asr/transcribe exige WAV PCM 16-bit mono (16 kHz ou 24 kHz).\n"
             "Instale imageio-ffmpeg (`pip install imageio-ffmpeg`) ou converta com:\n"
             f'  ffmpeg -y -i "{audio_path}" -ac 1 -ar 16000 -sample_fmt s16 saida_16k.wav'
@@ -90,17 +90,40 @@ def _convert_with_ffmpeg_to_wav_16k(audio_path: Path) -> bytes:
         "-sample_fmt",
         "s16",
         "-f",
-        "wav",
+        "s16le",
         "pipe:1",
     ]
     proc = subprocess.run(cmd, capture_output=True, check=False)
-    if proc.returncode != 0 or not proc.stdout.startswith(b"RIFF"):
+    pcm_bytes = proc.stdout
+    if proc.returncode != 0 or len(pcm_bytes) < 2:
         stderr_msg = proc.stderr.decode("utf-8", errors="replace").strip()[-300:]
         raise VoiceTranscriptionError(
             f"Formato de áudio não suportado ou ficheiro corrompido ('{audio_path}').\n"
             f"Detalhe da conversão: {stderr_msg}"
         )
-    return proc.stdout
+
+    if len(pcm_bytes) % 2 != 0:
+        pcm_bytes = pcm_bytes[:-1]
+
+    samples = array.array("h")
+    samples.frombytes(pcm_bytes)
+    if samples:
+        max_amp = max(abs(x) for x in samples)
+        # Normalize quiet browser microphone recordings so ASR can detect speech reliably
+        if 80 < max_amp < 12000:
+            gain = min(14.0, 22000.0 / float(max_amp))
+            samples = array.array(
+                "h",
+                (max(-32768, min(32767, int(x * gain))) for x in samples),
+            )
+
+    out_buf = io.BytesIO()
+    with wave.open(out_buf, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(16000)
+        writer.writeframes(samples.tobytes())
+    return out_buf.getvalue()
 
 
 def _normalize_wav_to_16k_mono_pcm(raw_bytes: bytes) -> bytes:
@@ -200,6 +223,7 @@ def _extract_transcript_from_response(response_text: str, content_type: str) -> 
                         parts.append(turn.strip())
                 if parts:
                     return " ".join(parts).strip()
+            return ""
         except json.JSONDecodeError:
             pass
 
