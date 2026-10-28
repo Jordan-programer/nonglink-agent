@@ -6,6 +6,9 @@ import { useApp } from "@/context/AppContext";
 export default function ModalAuth() {
   const {
     t,
+    lang,
+    setLang,
+    user,
     authModalOpen,
     authModalMode,
     setAuthModalMode,
@@ -22,42 +25,48 @@ export default function ModalAuth() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (authModalOpen) {
-      setErro("");
-    }
-  }, [authModalOpen, authModalMode]);
+    setErro("");
+  }, [authModalMode]);
 
-  useEffect(() => {
-    if (!authModalOpen) return;
-    function onKeyDown(e) {
-      if (e.key === "Escape") {
-        closeAuthModal();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [authModalOpen, closeAuthModal]);
-
-  if (!authModalOpen) return null;
+  // Se já há utilizador autenticado, o ecrã de entrada não é apresentado
+  if (user) return null;
 
   const isSignup = authModalMode === "signup";
+
+  const languages = [
+    { code: "pt", label: "PT" },
+    { code: "fr", label: "FR" },
+    { code: "en", label: "EN" },
+  ];
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErro("");
+    const cleanEmail = email.trim();
+    const cleanSenha = senha;
+    if (!cleanEmail || !cleanSenha) {
+      setErro("Preencha o email e a palavra-passe.");
+      return;
+    }
     setSubmitting(true);
     try {
       if (isSignup) {
-        await register(nome.trim(), email.trim(), senha);
+        const cleanNome = nome.trim();
+        if (!cleanNome) {
+          setErro("Indique o seu nome ou cooperativa.");
+          setSubmitting(false);
+          return;
+        }
+        await register(cleanNome, cleanEmail, cleanSenha);
       } else {
-        await login(email.trim(), senha);
+        await login(cleanEmail, cleanSenha);
       }
       setNome("");
       setEmail("");
       setSenha("");
     } catch (err) {
       setSenha("");
-      setErro(err?.message || "Erro ao autenticar.");
+      setErro(err?.message || "Erro ao autenticar. Verifique os dados ou o servidor.");
     } finally {
       setSubmitting(false);
     }
@@ -68,6 +77,8 @@ export default function ModalAuth() {
     setSubmitting(true);
     try {
       await loginWithDemo();
+    } catch (err) {
+      setErro(err?.message || "Erro ao entrar com conta de demonstração. Verifique a ligação ao servidor.");
     } finally {
       setSubmitting(false);
     }
@@ -75,15 +86,10 @@ export default function ModalAuth() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-label={isSignup ? t.signIn : t.login}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) {
-          closeAuthModal();
-        }
-      }}
     >
       <div className="w-full max-w-md rounded-card border border-border bg-surface p-6 text-text shadow-menu">
         {/* Header */}
@@ -94,14 +100,25 @@ export default function ModalAuth() {
             </h2>
             <p className="text-xs text-text-secondary">{t.demoData}</p>
           </div>
-          <button
-            type="button"
-            onClick={closeAuthModal}
-            aria-label={t.close}
-            className="flex h-8 w-8 items-center justify-center rounded-item text-text-secondary hover:bg-sidebar-hover hover:text-text transition-ui"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Seletor compacto de idioma PT FR EN */}
+            <div className="flex items-center rounded-item border border-border bg-sidebar p-0.5 text-[11px] font-semibold">
+              {languages.map((l) => (
+                <button
+                  key={l.code}
+                  type="button"
+                  onClick={() => setLang(l.code)}
+                  className={`rounded-[4px] px-2 py-0.5 transition-ui ${
+                    lang === l.code
+                      ? "bg-surface text-accent font-bold shadow-sm"
+                      : "text-text-secondary hover:text-text"
+                  }`}
+                >
+                  {l.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* Mode Tabs: Login vs Sign in (Register) */}

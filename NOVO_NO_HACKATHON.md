@@ -55,6 +55,13 @@ Trabalho feito numa sessão dedicada à segurança, em cima da autenticação po
 6. **CORS:** origens explícitas (sem `"*"`) e `allow_headers` com `Authorization`.
 7. **Testes** (`backend/tests/test_auth.py` e `backend/tests/test_isolamento.py`): base de dados temporária `nonglink_test.db` apagada no fim, com resultado OK/FALHOU por caso — 401 sem token (com e sem `X-Require-Auth`) em todos os endpoints protegidos, isolamento A/B (conversas, confirmações, anúncios, regas, fotos), sessão expirada, logout, mensagem genérica e bloqueio do 6.º intento, isolamento entre convidados e ausência de palavras-passe ou tokens nos logs.
 8. **Front-end** (`frontend/src/api.js`, `context/AppContext.jsx`, `components/ProvaDeFoto.jsx`, `components/ModalAuth.jsx`): token apenas em `sessionStorage`, palavra-passe nunca guardada, markdown sem HTML bruto, qualquer `401` limpa o estado e mostra o ecrã de entrada, fotos carregadas com `fetch` autenticado e `URL.createObjectURL` (libertadas com `URL.revokeObjectURL`), com as caixas desenhadas no canvas sobre essa imagem local. `npm run build` passa.
-9. **Documentação:** secção de autenticação, convidados e aviso de "só dados de demonstração" no `README.md`.
+9. **Documentação e endpoints de gestão de perfil e conta:**
+   - `GET /auth/eu` devolve `criado_em`, `convidado` e `expira_em` para convidados;
+   - `PATCH /auth/eu` valida nome (1-60 chars, sem chars de controlo) mantendo o email protegido;
+   - `POST /auth/senha` com taxa de tentativas, PBKDF2 (600k), invalidação de todas as outras sessões e preservação da actual;
+   - `POST /auth/sair-todas` com invalidação total de sessões (204);
+   - `DELETE /conversas` apaga conversas, mensagens e ficheiros de fotos do utilizador mantendo anúncios e regas;
+   - `DELETE /auth/eu` com confirmação rigorosa (senha para contas registadas, `APAGAR` para convidados) e remoção atómica de todos os registos e ficheiros de fotos;
+   - Nova suite de testes automatizados `backend/tests/test_conta.py` (OK/FALHOU) com base temporária apagada no fim.
 
 > **Aviso:** este repositório é público e o projecto destina-se apenas a **dados de demonstração**.

@@ -298,7 +298,43 @@ export async function obterFoto(fotoId) {
 }
 
 export async function obterUtilizadorAtual() {
-  return request("/auth/me", { method: "GET" });
+  return request("/auth/eu", { method: "GET" });
+}
+
+export async function atualizarNomeUtilizador(nome) {
+  return request("/auth/eu", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nome }),
+  });
+}
+
+export async function alterarPalavraPasse(senha_actual, senha_nova) {
+  return request("/auth/senha", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ senha_actual, senha_nova }),
+  });
+}
+
+export async function sairTodasSessoes() {
+  return request("/auth/sair-todas", {
+    method: "POST",
+  });
+}
+
+export async function apagarTodasConversas() {
+  return request("/conversas", {
+    method: "DELETE",
+  });
+}
+
+export async function apagarConta(payload) {
+  return request("/auth/eu", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
 }
 
 export async function listarAnuncios() {
@@ -348,7 +384,7 @@ export async function loginDemo() {
 }
 
 export async function logoutUtilizador() {
-  return request("/auth/logout", {
+  return request("/auth/sair", {
     method: "POST",
   });
 }

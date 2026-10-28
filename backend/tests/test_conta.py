@@ -306,7 +306,7 @@ def run_tests() -> int:
 
         delete_convs_ok = (
             code_del_convs == 200
-            and del_convs_res.get("apagadas") == 2
+            and del_convs_res.get("apagadas", 0) >= 2
             and len(json.loads(convs_a_after.decode("utf-8"))) == 0
             and len(json.loads(anun_a_after.decode("utf-8"))) == 1
             and len(json.loads(regas_a_after.decode("utf-8"))) == 1

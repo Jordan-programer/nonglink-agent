@@ -24,15 +24,70 @@ import {
 const AppContext = createContext(null);
 
 export function AppProvider({ children }) {
-  // Language: 'pt' (default), 'fr', 'en' — kept in memory only (no persistent storage)
-  const [lang, setLang] = useState("pt");
-  // Theme: 'system' (default), 'light', 'dark' — kept in memory only (no persistent storage)
-  const [theme, setTheme] = useState("system");
+  // Language & Theme: 'pt' / 'system' default, persisted in localStorage under nl_idioma and nl_tema
+  const [lang, setLangState] = useState(() => {
+    if (typeof window !== "undefined" && window.localStorage) {
+      try {
+        const saved = window.localStorage.getItem("nl_idioma");
+        if (saved && (saved === "pt" || saved === "fr" || saved === "en")) {
+          return saved;
+        }
+      } catch {
+        // ignore storage error
+      }
+    }
+    return "pt";
+  });
+
+  const [theme, setThemeState] = useState(() => {
+    if (typeof window !== "undefined" && window.localStorage) {
+      try {
+        const saved = window.localStorage.getItem("nl_tema");
+        if (saved && (saved === "system" || saved === "light" || saved === "dark")) {
+          return saved;
+        }
+      } catch {
+        // ignore storage error
+      }
+    }
+    return "system";
+  });
+
+  const setLang = useCallback((newLang) => {
+    setLangState(newLang);
+    if (typeof window !== "undefined" && window.localStorage) {
+      try {
+        window.localStorage.setItem("nl_idioma", newLang);
+      } catch {
+        // ignore storage error
+      }
+    }
+  }, []);
+
+  const setTheme = useCallback((newTheme) => {
+    setThemeState(newTheme);
+    if (typeof window !== "undefined" && window.localStorage) {
+      try {
+        window.localStorage.setItem("nl_tema", newTheme);
+      } catch {
+        // ignore storage error
+      }
+    }
+  }, []);
 
   // User authentication state: starts unauthenticated (null) so no chat is possible without login
   const [user, setUser] = useState(null);
   const [authToken, setAuthToken] = useState(null);
-  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalOpen, setAuthModalOpen] = useState(() => {
+    if (typeof window !== "undefined" && window.sessionStorage) {
+      try {
+        return !window.sessionStorage.getItem("nonglink_token");
+      } catch {
+        return true;
+      }
+    }
+    return true;
+  });
   const [authModalMode, setAuthModalMode] = useState("login"); // 'login' | 'signup'
 
   // Sidebar desktop collapsed state & mobile drawer open state
@@ -200,10 +255,13 @@ export function AppProvider({ children }) {
     return () => setOnUnauthorized(null);
   }, [handleUnauthorized]);
 
-  // Restore an existing tab session (token kept only in sessionStorage) and validate it with /auth/me
+  // Restore an existing tab session (token kept only in sessionStorage) and validate it with /auth/eu
   useEffect(() => {
     const savedToken = getApiAuthToken();
-    if (!savedToken) return;
+    if (!savedToken) {
+      setAuthModalOpen(true);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -211,15 +269,26 @@ export function AppProvider({ children }) {
         if (!cancelled && res?.utilizador) {
           setUser(res.utilizador);
           setAuthToken(savedToken);
+          setAuthModalOpen(false);
+        } else if (!cancelled) {
+          setAuthModalOpen(true);
         }
       } catch {
-        // 401 is handled globally by handleUnauthorized
+        // 401 is handled globally by handleUnauthorized; clear stale token on network error
+        setApiAuthToken(null);
+        if (!cancelled) {
+          setUser(null);
+          setAuthToken(null);
+          setAuthModalOpen(true);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
   }, []);
+
+  const [definicoesOpen, setDefinicoesOpen] = useState(false);
 
   return (
     <AppContext.Provider
@@ -228,6 +297,8 @@ export function AppProvider({ children }) {
         setLang,
         theme,
         setTheme,
+        definicoesOpen,
+        setDefinicoesOpen,
         t,
         user,
         setUser,

@@ -8,9 +8,6 @@ import { renomearConversa, apagarConversa } from "@/api";
 export default function Cabecalho({ title }) {
   const {
     t,
-    user,
-    openAuthModal,
-    logout,
     setMobileDrawerOpen,
     activeConversationId,
     activeConversationTitle,
@@ -265,42 +262,11 @@ export default function Cabecalho({ title }) {
         )}
       </div>
 
-      {/* Right: "Dados de demonstração" badge + Auth quick actions */}
+      {/* Right: "Dados de demonstração" badge */}
       <div className="flex items-center justify-end gap-2">
-        <span className="hidden sm:inline-block rounded-item border border-border bg-sidebar px-2.5 py-1 text-xs font-medium text-text-secondary whitespace-nowrap">
+        <span className="rounded-item border border-border bg-sidebar px-2.5 py-1 text-xs font-medium text-text-secondary whitespace-nowrap">
           {t.demoData}
         </span>
-        {user ? (
-          <div className="flex items-center gap-1.5">
-            <span className="hidden md:inline-block max-w-[140px] truncate text-xs font-semibold text-text">
-              {user.is_demo ? t.demoAccount : user.nome}
-            </span>
-            <button
-              type="button"
-              onClick={logout}
-              className="rounded-item border border-border bg-surface px-2.5 py-1 text-xs font-medium text-danger hover:bg-sidebar-hover whitespace-nowrap transition-ui"
-            >
-              {t.logout}
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => openAuthModal("login")}
-              className="rounded-item bg-accent px-2.5 py-1 text-xs font-semibold text-white hover:bg-accent-hover whitespace-nowrap transition-ui"
-            >
-              {t.authSubmitLogin}
-            </button>
-            <button
-              type="button"
-              onClick={() => openAuthModal("signup")}
-              className="hidden sm:inline-block rounded-item border border-border bg-surface px-2.5 py-1 text-xs font-medium text-text hover:bg-sidebar-hover whitespace-nowrap transition-ui"
-            >
-              {t.authSubmitSignup}
-            </button>
-          </div>
-        )}
       </div>
     </header>
   );

@@ -475,32 +475,9 @@ export default function ChatVista({ conversationId = null }) {
             <h1 className="font-serif text-2xl font-medium text-text mb-2">
               {t.authRequiredTitle}
             </h1>
-            <p className="text-sm text-text-secondary mb-6">
+            <p className="text-sm text-text-secondary">
               {t.authRequiredSubtitle}
             </p>
-            <div className="flex flex-col gap-2.5">
-              <button
-                type="button"
-                onClick={() => openAuthModal("login")}
-                className="w-full rounded-item bg-accent px-4 py-2.5 text-sm font-semibold text-white hover:bg-accent-hover transition-ui"
-              >
-                {t.login}
-              </button>
-              <button
-                type="button"
-                onClick={() => openAuthModal("signup")}
-                className="w-full rounded-item border border-border bg-bg px-4 py-2.5 text-sm font-semibold text-text hover:bg-sidebar-hover transition-ui"
-              >
-                {t.signIn}
-              </button>
-              <button
-                type="button"
-                onClick={() => loginWithDemo()}
-                className="w-full rounded-item px-4 py-2 text-xs font-medium text-accent hover:bg-sidebar-hover transition-ui"
-              >
-                {t.useDemoAccount}
-              </button>
-            </div>
           </div>
         </div>
       </div>

@@ -312,10 +312,12 @@ export default function BarraLateral() {
         )}
       </div>
 
-      {/* 6. Rodapé: Conta de demonstração */}
-      <div className="shrink-0 border-t border-border p-2">
-        <MenuConta collapsed={isCollapsedView} onNavigate={closeMobile} />
-      </div>
+      {/* 6. Rodapé: Perfil e menu da conta */}
+      {user && (
+        <div className="shrink-0 border-t border-border p-2">
+          <MenuConta collapsed={isCollapsedView} onNavigate={closeMobile} />
+        </div>
+      )}
     </div>
   );
 

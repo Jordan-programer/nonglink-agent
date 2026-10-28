@@ -95,9 +95,12 @@ cd ~\nonglink-agent\backend
 
 # 5. Isolamento entre utilizadores e convidados (OK / FALHOU)
 ..\.venv\Scripts\python.exe tests\test_isolamento.py
+
+# 6. Gestão de conta, perfil, senhas e eliminação de dados (OK / FALHOU)
+..\.venv\Scripts\python.exe tests\test_conta.py
 ```
 
-Os testes 4 e 5 usam uma base de dados temporária `backend/nonglink_test.db`, que é apagada no fim, e não precisam da `MODEL_API_KEY`.
+Os testes 4, 5 e 6 usam uma base de dados temporária `backend/nonglink_test.db`, que é apagada no fim, e não precisam da `MODEL_API_KEY`.
 
 ---
 

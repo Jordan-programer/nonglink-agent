@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useApp } from "@/context/AppContext";
 
@@ -8,64 +8,104 @@ export default function MenuConta({ collapsed = false, onNavigate }) {
   const {
     lang,
     setLang,
-    theme,
-    setTheme,
     t,
     user,
-    openAuthModal,
-    loginWithDemo,
     logout,
+    setDefinicoesOpen,
   } = useApp();
+
   const [open, setOpen] = useState(false);
+  const [submenuOpen, setSubmenuOpen] = useState(false);
+
   const containerRef = useRef(null);
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
+  const idiomaTriggerRef = useRef(null);
+  const submenuRef = useRef(null);
 
+  // Close when clicking outside
   useEffect(() => {
     if (!open) return;
     function handleClickOutside(e) {
       if (containerRef.current && !containerRef.current.contains(e.target)) {
         setOpen(false);
+        setSubmenuOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [open]);
 
-  const handleKeyDown = (e) => {
-    if (!open) return;
-    if (e.key === "Escape") {
-      e.preventDefault();
-      setOpen(false);
-      triggerRef.current?.focus();
-      return;
-    }
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      const items = menuRef.current?.querySelectorAll(
-        '[role="menuitem"], [role="menuitemradio"]'
-      );
-      if (!items || items.length === 0) return;
-      const arr = Array.from(items);
-      const currentIndex = arr.indexOf(document.activeElement);
-      let nextIndex = 0;
-      if (e.key === "ArrowDown") {
-        nextIndex = currentIndex < arr.length - 1 ? currentIndex + 1 : 0;
-      } else {
-        nextIndex = currentIndex > 0 ? currentIndex - 1 : arr.length - 1;
-      }
-      arr[nextIndex]?.focus();
-    }
-  };
-
+  // Focus management when menu opens
   useEffect(() => {
     if (open && menuRef.current) {
-      const first = menuRef.current.querySelector(
-        '[role="menuitem"], [role="menuitemradio"]'
-      );
+      const first = menuRef.current.querySelector('[role="menuitem"]');
       first?.focus();
     }
   }, [open]);
+
+  // Keyboard navigation on main menu
+  const handleKeyDown = (e) => {
+    if (!open) return;
+
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (submenuOpen) {
+        setSubmenuOpen(false);
+        idiomaTriggerRef.current?.focus();
+      } else {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+      return;
+    }
+
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const currentParent = submenuOpen && submenuRef.current?.contains(document.activeElement)
+        ? submenuRef.current
+        : menuRef.current;
+      if (!currentParent) return;
+
+      const items = Array.from(
+        currentParent.querySelectorAll('[role="menuitem"]')
+      );
+      if (items.length === 0) return;
+
+      const idx = items.indexOf(document.activeElement);
+      let nextIdx = 0;
+      if (e.key === "ArrowDown") {
+        nextIdx = idx < items.length - 1 ? idx + 1 : 0;
+      } else {
+        nextIdx = idx > 0 ? idx - 1 : items.length - 1;
+      }
+      items[nextIdx]?.focus();
+    }
+  };
+
+  const handleIdiomaKeyDown = (e) => {
+    if (e.key === "ArrowRight" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      setSubmenuOpen(true);
+      setTimeout(() => {
+        const first = submenuRef.current?.querySelector('[role="menuitem"]');
+        first?.focus();
+      }, 30);
+    }
+  };
+
+  const handleSubmenuKeyDown = (e) => {
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      setSubmenuOpen(false);
+      idiomaTriggerRef.current?.focus();
+    }
+  };
+
+  // Only render when authenticated
+  if (!user) {
+    return null;
+  }
 
   const languages = [
     { code: "pt", label: "Português" },
@@ -73,213 +113,145 @@ export default function MenuConta({ collapsed = false, onNavigate }) {
     { code: "en", label: "English" },
   ];
 
-  const themes = [
-    { code: "system", label: t.themeSystem },
-    { code: "light", label: t.themeLight },
-    { code: "dark", label: t.themeDark },
-  ];
-
-  const displayName = user
-    ? user.is_demo
-      ? t.demoAccount
-      : user.nome
-    : t.loggedOutLabel;
-
-  const displayEmail = user?.email || "";
-  const avatarInitial = user
-    ? (user.is_demo ? "D" : (user.nome || "U").trim().charAt(0).toUpperCase())
-    : "?";
+  const displayName = user.is_demo ? t.demoAccount : user.nome || "Utilizador";
+  const displayEmail = user.email || "";
+  const avatarInitial = (user.is_demo ? "D" : (user.nome || "U")).trim().charAt(0).toUpperCase();
 
   return (
     <div ref={containerRef} className="relative" onKeyDown={handleKeyDown}>
+      {/* Upward floating menu */}
       {open && (
         <div
           ref={menuRef}
           role="menu"
           aria-label={displayName}
-          className="absolute bottom-full left-0 mb-2 w-64 rounded-item border border-border bg-surface p-2 shadow-menu z-50 transition-ui"
+          className="absolute bottom-full left-0 mb-2 w-60 rounded-item border border-border bg-surface p-1.5 shadow-menu z-50 transition-ui"
         >
-          {/* Secção de Conta: Login, Sign in, Logout */}
-          <div className="px-2 py-1 text-xs font-medium text-text-secondary">
-            {t.accountSection}
-          </div>
-          {user && (
-            <div className="mb-1.5 rounded-item bg-sidebar px-2.5 py-1.5">
-              <div className="truncate text-xs font-semibold text-text">
-                {displayName}
-              </div>
-              {displayEmail && (
-                <div className="truncate text-xs text-text-secondary">
-                  {displayEmail}
-                </div>
-              )}
+          {/* Informative Header (Name & Email, non-clickable) */}
+          <div className="rounded-item bg-sidebar px-3 py-2 select-none mb-1">
+            <div className="truncate text-xs font-semibold text-text">
+              {displayName}
             </div>
-          )}
-
-          <div className="mb-2 space-y-0.5">
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setOpen(false);
-                openAuthModal("login");
-              }}
-              className="flex w-full items-center justify-between rounded-item px-2.5 py-1.5 text-left text-sm text-text hover:bg-sidebar-hover transition-ui"
-            >
-              <span>{t.login}</span>
-            </button>
-
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setOpen(false);
-                openAuthModal("signup");
-              }}
-              className="flex w-full items-center justify-between rounded-item px-2.5 py-1.5 text-left text-sm text-text hover:bg-sidebar-hover transition-ui"
-            >
-              <span>{t.signIn}</span>
-            </button>
-
-            {user ? (
-              <button
-                type="button"
-                role="menuitem"
-                onClick={async () => {
-                  setOpen(false);
-                  await logout();
-                }}
-                className="flex w-full items-center justify-between rounded-item px-2.5 py-1.5 text-left text-sm font-medium text-danger hover:bg-sidebar-hover transition-ui"
-              >
-                <span>{t.logout}</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                role="menuitem"
-                onClick={async () => {
-                  setOpen(false);
-                  await loginWithDemo();
-                }}
-                className="flex w-full items-center justify-between rounded-item px-2.5 py-1.5 text-left text-xs font-medium text-accent hover:bg-sidebar-hover transition-ui"
-              >
-                <span>{t.useDemoAccount}</span>
-              </button>
+            {displayEmail && (
+              <div className="truncate text-[11px] text-text-secondary">
+                {displayEmail}
+              </div>
             )}
           </div>
 
-          <div className="my-1.5 border-t border-border" />
+          <div className="space-y-0.5">
+            {/* Definições */}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                setSubmenuOpen(false);
+                setDefinicoesOpen(true);
+              }}
+              className="flex w-full items-center justify-between rounded-item px-2.5 py-1.5 text-left text-sm text-text hover:bg-sidebar-hover transition-ui"
+            >
+              <span>{t.settings}</span>
+            </button>
 
-          {/* Idioma */}
-          <div className="px-2 py-1 text-xs font-medium text-text-secondary">
-            {t.language}
-          </div>
-          <div className="mb-2 space-y-0.5">
-            {languages.map((item) => {
-              const active = lang === item.code;
-              return (
-                <button
-                  key={item.code}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={active}
-                  onClick={() => {
-                    setLang(item.code);
-                  }}
-                  className={`flex w-full items-center justify-between rounded-item px-2.5 py-1.5 text-left text-sm transition-ui ${
-                    active
-                      ? "bg-sidebar-active font-medium text-text"
-                      : "text-text hover:bg-sidebar-hover"
-                  }`}
+            {/* Idioma com submenu à direita */}
+            <div
+              className="relative"
+              onMouseEnter={() => setSubmenuOpen(true)}
+              onMouseLeave={() => setSubmenuOpen(false)}
+            >
+              <button
+                ref={idiomaTriggerRef}
+                type="button"
+                role="menuitem"
+                aria-haspopup="menu"
+                aria-expanded={submenuOpen}
+                onClick={() => setSubmenuOpen((prev) => !prev)}
+                onKeyDown={handleIdiomaKeyDown}
+                className="flex w-full items-center justify-between rounded-item px-2.5 py-1.5 text-left text-sm text-text hover:bg-sidebar-hover transition-ui"
+              >
+                <span>{t.language}</span>
+                <span className="text-xs text-text-secondary" aria-hidden="true">
+                  ▸
+                </span>
+              </button>
+
+              {submenuOpen && (
+                <div
+                  ref={submenuRef}
+                  role="menu"
+                  aria-label={t.language}
+                  onKeyDown={handleSubmenuKeyDown}
+                  className="absolute left-full bottom-0 ml-1.5 w-36 rounded-item border border-border bg-surface p-1 shadow-menu z-50"
                 >
-                  <span>{item.label}</span>
-                  {active && (
-                    <span
-                      className="text-accent text-xs font-semibold"
-                      aria-hidden="true"
-                    >
-                      ✓
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+                  {languages.map((item) => {
+                    const active = lang === item.code;
+                    return (
+                      <button
+                        key={item.code}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setLang(item.code);
+                          setSubmenuOpen(false);
+                          setOpen(false);
+                        }}
+                        className={`flex w-full items-center justify-between rounded-item px-2.5 py-1.5 text-left text-xs transition-ui ${
+                          active
+                            ? "bg-sidebar-active font-semibold text-text"
+                            : "text-text hover:bg-sidebar-hover"
+                        }`}
+                      >
+                        <span>{item.label}</span>
+                        {active && (
+                          <span
+                            className="text-accent text-xs font-semibold"
+                            aria-hidden="true"
+                          >
+                            ✓
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Sobre */}
+            <Link
+              href="/sobre"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                setSubmenuOpen(false);
+                onNavigate?.();
+              }}
+              className="flex w-full items-center rounded-item px-2.5 py-1.5 text-left text-sm text-text hover:bg-sidebar-hover transition-ui"
+            >
+              {t.navAbout}
+            </Link>
           </div>
 
-          <div className="my-1.5 border-t border-border" />
+          <div className="my-1 border-t border-border" />
 
-          {/* Tema */}
-          <div className="px-2 py-1 text-xs font-medium text-text-secondary">
-            {t.theme}
-          </div>
-          <div className="mb-2 space-y-0.5">
-            {themes.map((item) => {
-              const active = theme === item.code;
-              return (
-                <button
-                  key={item.code}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={active}
-                  onClick={() => {
-                    setTheme(item.code);
-                  }}
-                  className={`flex w-full items-center justify-between rounded-item px-2.5 py-1.5 text-left text-sm transition-ui ${
-                    active
-                      ? "bg-sidebar-active font-medium text-text"
-                      : "text-text hover:bg-sidebar-hover"
-                  }`}
-                >
-                  <span>{item.label}</span>
-                  {active && (
-                    <span
-                      className="text-accent text-xs font-semibold"
-                      aria-hidden="true"
-                    >
-                      ✓
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="my-1.5 border-t border-border" />
-
-          {/* Sobre */}
-          <Link
-            href="/sobre"
+          {/* Terminar sessão (a cor de erro) */}
+          <button
+            type="button"
             role="menuitem"
-            onClick={() => {
+            onClick={async () => {
               setOpen(false);
-              onNavigate?.();
+              setSubmenuOpen(false);
+              await logout();
             }}
-            className="flex w-full items-center rounded-item px-2.5 py-1.5 text-sm text-text hover:bg-sidebar-hover transition-ui"
+            className="flex w-full items-center rounded-item px-2.5 py-1.5 text-left text-sm font-medium text-danger hover:bg-sidebar-hover transition-ui"
           >
-            {t.navAbout}
-          </Link>
-        </div>
-      )}
-
-      {!collapsed && !user && (
-        <div className="mb-2 grid grid-cols-2 gap-1.5">
-          <button
-            type="button"
-            onClick={() => openAuthModal("login")}
-            className="rounded-item bg-accent px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-accent-hover transition-ui"
-          >
-            {t.authSubmitLogin}
-          </button>
-          <button
-            type="button"
-            onClick={() => openAuthModal("signup")}
-            className="rounded-item border border-border bg-surface px-2.5 py-1.5 text-xs font-semibold text-text hover:bg-sidebar-hover transition-ui"
-          >
-            {t.authSubmitSignup}
+            <span>{t.logout}</span>
           </button>
         </div>
       )}
 
+      {/* Botão de Perfil na barra lateral */}
       <button
         ref={triggerRef}
         type="button"
@@ -293,9 +265,7 @@ export default function MenuConta({ collapsed = false, onNavigate }) {
         }`}
       >
         <span
-          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white ${
-            user ? "bg-accent" : "bg-text-secondary"
-          }`}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-sm font-semibold text-white shadow-sm"
           aria-hidden="true"
         >
           {avatarInitial}
