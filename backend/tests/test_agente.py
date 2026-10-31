@@ -7,6 +7,7 @@ Tests 3 core cases against the real Meta API (muse-spark-1.3) and SQLite databas
 """
 
 from pathlib import Path
+import os
 import sys
 from typing import Callable, Tuple
 

@@ -160,3 +160,80 @@ A especificação completa está documentada em [`backend/app/integracao/mapa_en
 ### Convidados (botão "Continuar com conta de demonstração")
 
 `POST /auth/demo` cria em cada chamada um **utilizador convidado novo e temporário** (email aleatório do tipo `convidado-xxxx@convidado.nonglink`, sem palavra-passe) com uma sessão de 24 horas. Cada convidado só vê os seus próprios dados; dois convidados nunca partilham conversas, anúncios, regas nem fotos. Já não existe uma conta de demonstração partilhada com entrada automática.
+
+
+---
+
+## 🐳 Executar com Docker
+
+Para uma execução reprodutível, isolada e sem necessidade de configurar dependências de Python ou Node.js na máquina local, o projecto inclui suporte completo para Docker e Docker Compose.
+
+### Pré-requisitos
+- **Docker Engine** (24+) e **Docker Compose** (v2+) instalados (ex.: Docker Desktop em Windows/macOS ou Docker CE em Linux).
+
+### 1. Configurar Variáveis de Ambiente
+```bash
+Copy-Item .env.example .env
+# No Linux/macOS: cp .env.example .env
+```
+Abra o ficheiro `.env` e configure a sua chave `MODEL_API_KEY`. As restantes variáveis já contêm valores por omissão seguros para execução em contentor.
+
+### 2. Construir e Iniciar os Contentores
+```bash
+docker compose up --build -d
+```
+Após o arranque:
+- **Front-end Web:** [http://127.0.0.1:3000](http://127.0.0.1:3000)
+- **API FastAPI:** [http://127.0.0.1:8000](http://127.0.0.1:8000)
+- **Verificação de Saúde (Healthcheck):** [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health) devolve `{"estado":"ok"}`.
+- **Documentação Swagger (se ENABLE_DOCS=1):** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+
+### 3. Modo Demonstração para o Júri (Acesso por Rede Local / IP Público)
+Por omissão, as portas são publicadas estritamente em `127.0.0.1` por segurança. Para abrir as portas em `0.0.0.0` para acesso de outros dispositivos ou do júri na mesma rede:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build -d
+```
+
+### 4. Executar os Testes Automatizados no Contentor
+Os testes unitários e de integração correm dentro do contentor isolado sem necessidade de expor credenciais reais:
+```bash
+docker compose run --rm backend python -m pytest
+```
+
+### 5. Parar os Contentores e Limpar Dados
+- **Parar os serviços mantendo a base de dados:**
+  ```bash
+  docker compose down
+  ```
+- **Parar e apagar completamente o volume de dados (`/data`):**
+  ```bash
+  docker compose down -v
+  ```
+
+---
+
+## ☁️ Alojar Online
+
+Para publicar o agente numa plataforma de alojamento em nuvem (Render, Railway, Fly.io, GCP Cloud Run, AWS App Runner):
+
+1. **Backend (FastAPI):**
+   - **Build context:** `./backend`, **Dockerfile:** `Dockerfile`.
+   - **Disco Persistente (Volume):** Criar e montar um volume em `/data`.
+   - **Variáveis de Ambiente Mínimas:**
+     ```env
+     MODEL_API_KEY=sua_chave_meta_model_api
+     DATA_DIR=/data
+     PORT=8000
+     ALLOWED_CORS_ORIGINS=https://seu-dominio-frontend.com
+     ENABLE_DOCS=0
+     MODO_PLATAFORMA=sandbox
+     MODO_MANUTENCAO=0
+     ```
+2. **Frontend (Next.js Standalone):**
+   - **Build context:** `./frontend`, **Dockerfile:** `Dockerfile`.
+   - **Variáveis de Build / Runtime:**
+     ```env
+     NEXT_PUBLIC_API_URL=https://seu-dominio-backend.com
+     PORT=3000
+     ```
+   - O build standalone do Next.js compila assets estáticos e o servidor minimalista Node.js sem sobrecarga de dependências de desenvolvimento.

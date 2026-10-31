@@ -169,3 +169,31 @@ Implementação da camada de integração com a API REST oficial do NongLink (`/
 9. **Suite de Testes com MockTransport (`backend/tests/test_integracao_api.py`):**
    - 16 testes automatizados cobrindo token, 401, 404, 422, 5xx, timeouts, reconciliação, acentos, parcelas, conflito 409, paridade de contrato e endpoints FastAPI;
    - Teste de integração real contra o backend local NongLink (opcional, `@pytest.mark.skipif(TEST_REAL_NONGLINK != "1")`).
+
+
+### K. Containerização com Docker e Preparação para Alojamento em Nuvem
+
+1. **`backend/Dockerfile`:**
+   - Imagem base `python:3.12.7-slim` (versão fixada, nunca `latest`);
+   - Utilizador dedicado não-root `appuser` (UID 10001);
+   - Variáveis `PYTHONUNBUFFERED=1`, `DATA_DIR=/data` e `PORT=8000`;
+   - Healthcheck nativo chamando `GET http://127.0.0.1:8000/health`;
+   - Respeito integral da variável `DATA_DIR` em `backend/app/config.py` para isolamento de dados no volume montado `/data`.
+2. **`frontend/Dockerfile`:**
+   - Multi-stage build com `node:20.18.0-alpine`;
+   - Configuração de `output: "standalone"` em `next.config.mjs` para imagens ultra-leves e eficientes;
+   - Utilizador dedicado não-root `nextjs` (UID 1001);
+   - `ARG NEXT_PUBLIC_API_URL` com valor público e sem segredos;
+   - Healthcheck nativo com `wget` na porta 3000.
+3. **Orquestração `docker-compose.yml` e `docker-compose.demo.yml`:**
+   - Serviços `backend` e `frontend` com volume nomeado `nonglink_data`;
+   - Dependência estrita de arranque saudável (`depends_on: { backend: { condition: service_healthy } }`);
+   - Publicação segura limitada a `127.0.0.1` por omissão e ficheiro de sobreposição `docker-compose.demo.yml` para publicação em `0.0.0.0` para demonstração ao júri.
+4. **Isolamento de Segredos e `.dockerignore`:**
+   - Ficheiros `.dockerignore` na raiz, no `backend/` e no `frontend/` impedindo a inclusão de ficheiros `.env`, segredos, bases de dados e caches;
+   - Nenhum segredo gravado em `ARG` nem em `ENV` das imagens.
+5. **Endpoint `/health` Público e Sem Dependências:**
+   - Rota `GET /health` pública em FastAPI, devolvendo `{"estado":"ok"}` instantaneamente sem tocar na base de dados nem na API da Meta.
+6. **Suporte para Variáveis de Produção:**
+   - `ALLOWED_CORS_ORIGINS` (lista explícita sem `*`);
+   - `ENABLE_DOCS=0` (desativação de `/docs`, `/redoc` e `/openapi.json` com retorno 404).

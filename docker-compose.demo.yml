@@ -1,0 +1,12 @@
+# Ficheiro de sobreposição para a demonstração ao júri
+# Publica as portas em todas as interfaces de rede (0.0.0.0) para acesso externo / LAN
+# Uso: docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d --build
+
+services:
+  backend:
+    ports:
+      - "0.0.0.0:8000:8000"
+
+  frontend:
+    ports:
+      - "0.0.0.0:3000:3000"

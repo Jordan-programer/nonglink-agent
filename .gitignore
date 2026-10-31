@@ -23,3 +23,7 @@ frontend/.next/
 frontend/out/
 node_modules/
 .next/
+
+*.db
+*.sqlite
+*.sqlite3

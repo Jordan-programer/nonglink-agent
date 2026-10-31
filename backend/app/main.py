@@ -555,6 +555,7 @@ def _continue_agent_turns(
     """Run or resume the agent loop up to MAX_TURNS, pausing on side-effecting tools."""
     client = create_meta_client()
     final_text = ""
+    token = user.get("token") if user else None
 
     for turn in range(start_turn, MAX_TURNS + 1):
         response = client.responses.create(
