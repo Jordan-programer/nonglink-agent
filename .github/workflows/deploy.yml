@@ -1,0 +1,50 @@
+name: Deploy to Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      demo_mode:
+        description: "Activar modo de demonstração pública (0.0.0.0)"
+        required: false
+        default: "false"
+        type: boolean
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy via SSH (Docker Compose)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy on remote server
+        if: ${{ env.SSH_HOST != '' }}
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          script: |
+            set -e
+            TARGET_DIR="${{ secrets.DEPLOY_DIR || '/var/www/nonglink-agent' }}"
+            if [ -d "$TARGET_DIR" ]; then
+              cd "$TARGET_DIR"
+              git pull origin main
+              chmod +x scripts/deploy.sh
+              if [ "${{ inputs.demo_mode }}" = "true" ]; then
+                ./scripts/deploy.sh --demo
+              else
+                ./scripts/deploy.sh
+              fi
+            else
+              echo "Directório de deploy $TARGET_DIR não encontrado no servidor remoto."
+              exit 1
+            fi

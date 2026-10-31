@@ -1,8 +1,24 @@
 # NongLink Agente 🌱 (PT | FR | EN)
 
+[![CI](https://github.com/[REPOSITORIO]/actions/workflows/ci.yml/badge.svg)](https://github.com/[REPOSITORIO]/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Assistente agrícola multimodal (**Texto, Voz e Visão**) e multilingue (**Português, Francês e Inglês**) para pequenos agricultores e cooperativas em **Angola, RDC e República do Congo**, desenvolvido para o **Meta Global AI Developer Hackathon (Categoria Startup)**.
 
-> ⚠️ **Dados de demonstração:** Todos os preços de culturas (em Kz/kg), contagens, estimativas de peso, anúncios e agendamentos de rega são **100% fictícios para fins de demonstração**. O projecto não recolhe nem armazena dados pessoais reais.
+> ⚠️ **Dados de demonstração:** Todos os preços de culturas (em Kz/kg), contagens, estimativas de peso, anúncios e agendamentos de rega são **100% fictícios para fins de demonstração**. Só use dados fictícios: as contas guardam o email e um hash da palavra-passe.
+
+---
+
+## 🏆 Para o Júri (Meta Global AI Developer Hackathon)
+
+- **Endereço Público da Aplicação:** [URL_PUBLICO]
+- **Vídeo de Demonstração (Pitch & Walkthrough):** [URL_VIDEO]
+- **Acesso Imediato sem Registo:** No ecrã de entrada, clique no botão **"Continuar com conta de demonstração"** para criar instantaneamente uma conta temporária de convidado com isolamento total de dados e sessão válida por 24 horas.
+- **Modelos da Meta Model API Utilizados:**
+  - **Muse Spark (`muse-spark-1.3`):** Raciocínio central e ciclo de agente multimodal (até 5 voltas) com chamada determinística a ferramentas (`obter_preco`, `analisar_foto`, `criar_anuncio`, `agendar_rega`) e confirmação obrigatória do utilizador em duas etapas no talão.
+  - **Muse Voice Transcribe (`muse-voice-transcribe-1.0`):** Transcrição automática de voz (ASR multilingue em PT, FR e EN) adaptada ao vocabulário agrícola angolano e congolês, com conversão de áudio móvel para WAV PCM mono 16 kHz.
+  - **SAM 3.1 (`sam-3.1`):** Segmentação e contagem visual de instâncias de produtos agrícolas a partir de fotografias do lote tiradas pelo produtor.
+- **O Que Foi Construído no Hackathon:** Todo o código deste repositório foi desenvolvido do zero durante o hackathon. Consulte o documento detalhado [NOVO_NO_HACKATHON.md](NOVO_NO_HACKATHON.md) para o registo completo de componentes, guardas, testes e arquitectura.
 
 ---
 
@@ -33,7 +49,7 @@ Copie `.env.example` para `.env` na raiz do projecto (`~\nonglink-agent\.env`):
 | Variável | Obrigatória | Descrição |
 | :--- | :---: | :--- |
 | `MODEL_API_KEY` | **Sim** | Chave de autenticação Bearer para `https://api.meta.ai/v1` (lida exclusivamente via `backend/app/config.py`). |
-| `NEXT_PUBLIC_API_URL` | Opcional | URL da API FastAPI usado pelo front-end Next.js (por omissão: `http://127.0.0.1:8000`). |
+| `NEXT_PUBLIC_API_URL` | Opcional | URL da API FastAPI consumido pelo front-end Next.js (por omissão: `http://127.0.0.1:8000`). Nota: no Docker, é injectado como argumento de build (`ARG`) porque o Next.js embute variáveis públicas no bundle cliente durante a compilação. |
 
 ---
 
@@ -59,7 +75,8 @@ cd ~\nonglink-agent\backend
 ### 3. Arrancar o Backend FastAPI (`http://127.0.0.1:8000`)
 
 ```powershell
-ew 
+cd ~\nonglink-agent\backend
+..\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
 ### 4. Instalar e Arrancar o Front-end Next.js (`http://localhost:3000`)
@@ -115,7 +132,7 @@ O agente de campo suporta dois modos operacionais configuráveis via `.env`:
 
 ### Mapeamento e Distinção de Endpoints
 
-A especificação completa está documentada em [`backend/app/integracao/mapa_endpoints.json`](file:///c:/Users/jorda/nonglink-agent/backend/app/integracao/mapa_endpoints.json).
+A especificação completa está documentada em [`backend/app/integracao/mapa_endpoints.json`](backend/app/integracao/mapa_endpoints.json).
 
 | Endpoint | Método | Origem | Descrição e Comportamento do Agente |
 | :--- | :---: | :---: | :--- |
@@ -140,13 +157,12 @@ A especificação completa está documentada em [`backend/app/integracao/mapa_en
 3. **Conversão de Fuso Horário:** Os horários introduzidos pelo utilizador são interpretados no fuso horário de Angola (`Africa/Luanda`, WAT, UTC+1) e convertidos em formato ISO 8601 UTC antes do envio.
 4. **Protecção de Segredos:** Palavras-passe e tokens nunca são persistidos em ficheiros de log nem registados em texto simples. Em modo `api`, o registo local autónomo e o modo convidado ficam desativados para preservar a integridade das identidades corporativas.
 
-
 ---
 
 ## 🔐 Autenticação e Sessões
 
 > [!WARNING]
-> **Só dados de demonstração.** Este é um protótipo de hackathon num repositório público. Use apenas dados fictícios: não introduza dados pessoais reais, palavras-passe que use noutros serviços, nem fotografias ou gravações sensíveis.
+> **Só dados de demonstração.** Este é um protótipo de hackathon num repositório público. Só use dados fictícios: as contas guardam o email e um hash da palavra-passe. Não introduza palavras-passe que use noutros serviços, nem fotografias ou gravações sensíveis.
 
 - **Autenticação obrigatória:** todos os endpoints exigem `Authorization: Bearer <token>`, excepto `POST /auth/registar`, `POST /auth/login`, `POST /auth/demo`, `/docs` e `/openapi.json`. Sem token válido a resposta é `401`.
 - **Isolamento por utilizador:** conversas, mensagens, anúncios, regas, fotos e acções pendentes (`/confirmar`) pertencem a um utilizador. Um recurso de outro utilizador devolve sempre `404`. Linhas antigas sem dono ficam invisíveis.
@@ -161,10 +177,11 @@ A especificação completa está documentada em [`backend/app/integracao/mapa_en
 
 `POST /auth/demo` cria em cada chamada um **utilizador convidado novo e temporário** (email aleatório do tipo `convidado-xxxx@convidado.nonglink`, sem palavra-passe) com uma sessão de 24 horas. Cada convidado só vê os seus próprios dados; dois convidados nunca partilham conversas, anúncios, regas nem fotos. Já não existe uma conta de demonstração partilhada com entrada automática.
 
-
 ---
 
 ## 🐳 Executar com Docker
+
+> ℹ️ **Estado:** Construção e testes em contentor validados pelo CI do GitHub (ver selo).
 
 Para uma execução reprodutível, isolada e sem necessidade de configurar dependências de Python ou Node.js na máquina local, o projecto inclui suporte completo para Docker e Docker Compose.
 
@@ -210,13 +227,32 @@ docker compose run --rm backend python -m pytest
   docker compose down -v
   ```
 
+### 6. Script de Deploy Automatizado (Um Só Comando)
+Para automatizar a verificação de ficheiros, cópia de configuração, build, arranque e teste de saúde:
+- **No Linux / VPS:**
+  ```bash
+  chmod +x scripts/deploy.sh
+  ./scripts/deploy.sh          # Modo padrão (127.0.0.1)
+  ./scripts/deploy.sh --demo   # Modo demonstração (0.0.0.0)
+  ```
+- **No Windows (PowerShell):**
+  ```powershell
+  .\scripts\deploy.ps1         # Modo padrão (127.0.0.1)
+  .\scripts\deploy.ps1 -Demo   # Modo demonstração (0.0.0.0)
+  ```
+
 ---
 
 ## ☁️ Alojar Online
 
-Para publicar o agente numa plataforma de alojamento em nuvem (Render, Railway, Fly.io, GCP Cloud Run, AWS App Runner):
+Para publicar o agente numa plataforma de alojamento em nuvem (Render, Railway, Fly.io, GCP Cloud Run, AWS App Runner ou VPS):
 
-1. **Backend (FastAPI):**
+1. **Deploy Automatizado em VPS via GitHub Actions:**
+   - O repositório inclui [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) pronto a usar.
+   - Configure em **GitHub Secrets**: `SSH_HOST`, `SSH_USER` e `SSH_PRIVATE_KEY` (e opcionalmente `DEPLOY_DIR`).
+   - Cada push na branch `main` (ou disparo manual via **Actions > Deploy to Server**) atualiza o repositório no servidor e executa `./scripts/deploy.sh`.
+
+2. **Backend (FastAPI) em Plataformas PaaS (Render / Railway / Fly.io):**
    - **Build context:** `./backend`, **Dockerfile:** `Dockerfile`.
    - **Disco Persistente (Volume):** Criar e montar um volume em `/data`.
    - **Variáveis de Ambiente Mínimas:**
@@ -229,7 +265,8 @@ Para publicar o agente numa plataforma de alojamento em nuvem (Render, Railway, 
      MODO_PLATAFORMA=sandbox
      MODO_MANUTENCAO=0
      ```
-2. **Frontend (Next.js Standalone):**
+
+3. **Frontend (Next.js Standalone):**
    - **Build context:** `./frontend`, **Dockerfile:** `Dockerfile`.
    - **Variáveis de Build / Runtime:**
      ```env
@@ -237,3 +274,9 @@ Para publicar o agente numa plataforma de alojamento em nuvem (Render, Railway, 
      PORT=3000
      ```
    - O build standalone do Next.js compila assets estáticos e o servidor minimalista Node.js sem sobrecarga de dependências de desenvolvimento.
+
+---
+
+## 📄 Licença
+
+Este projecto está licenciado sob os termos da licença [MIT](LICENSE).
