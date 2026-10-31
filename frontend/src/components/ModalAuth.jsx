@@ -66,7 +66,13 @@ export default function ModalAuth() {
       setSenha("");
     } catch (err) {
       setSenha("");
-      setErro(err?.message || "Erro ao autenticar. Verifique os dados ou o servidor.");
+      if (err?.status === 429) {
+        setErro(err?.message || t.error429);
+      } else if (err?.status === 503) {
+        setErro(err?.message || t.error503);
+      } else {
+        setErro(err?.message || "Erro ao autenticar. Verifique os dados ou o servidor.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -78,7 +84,13 @@ export default function ModalAuth() {
     try {
       await loginWithDemo();
     } catch (err) {
-      setErro(err?.message || "Erro ao entrar com conta de demonstração. Verifique a ligação ao servidor.");
+      if (err?.status === 429) {
+        setErro(err?.message || t.error429);
+      } else if (err?.status === 503) {
+        setErro(err?.message || t.error503);
+      } else {
+        setErro(err?.message || "Erro ao entrar com conta de demonstração. Verifique a ligação ao servidor.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -119,6 +131,11 @@ export default function ModalAuth() {
               ))}
             </div>
           </div>
+        </div>
+
+        {/* Aviso de demonstração visível */}
+        <div className="mb-4 rounded-item border border-accent/25 bg-accent/5 p-3 text-xs leading-relaxed text-text">
+          <p className="font-medium text-text">{t.demoNotice}</p>
         </div>
 
         {/* Mode Tabs: Login vs Sign in (Register) */}

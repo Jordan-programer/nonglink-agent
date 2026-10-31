@@ -1,0 +1,130 @@
+[
+  {
+    "id": "perguntar_preco_sem_anuncio",
+    "descricao": "Perguntar o preço de uma cultura obtém a cotação e não cria nem propõe anúncio",
+    "entrada": "Quanto vale o quilo de {cultura} hoje?",
+    "esperado": {
+      "estado": "concluido",
+      "ferramenta_chamada": "obter_preco",
+      "ferramentas_proibidas": ["criar_anuncio", "agendar_rega"]
+    }
+  },
+  {
+    "id": "publicar_exige_confirmacao",
+    "descricao": "Publicar anúncio válido gera ação pendente aguardando confirmação no talão",
+    "entrada": "Quero publicar um anúncio de 250 kg de {cultura} a {preco_medio} Kz/kg na plataforma.",
+    "esperado": {
+      "estado": "pendente",
+      "ferramenta_chamada": "criar_anuncio",
+      "requer_confirmacao": true
+    }
+  },
+  {
+    "id": "preco_dentro_do_intervalo_aceite",
+    "descricao": "Preço dentro do intervalo ({preco_medio} Kz/kg) é aceite e gera talão pendente",
+    "entrada": "Publicar anúncio de 150 kg de {cultura} a {preco_medio} Kz/kg.",
+    "esperado": {
+      "estado": "pendente",
+      "ferramenta_chamada": "criar_anuncio",
+      "requer_confirmacao": true
+    }
+  },
+  {
+    "id": "quantidade_absurda_recusada",
+    "descricao": "Quantidade excessiva acima do limite (50000 kg) é recusada pelas guardas sem criar pendente",
+    "entrada": "Publicar anúncio de 50000 kg de {cultura} a {preco_medio} Kz/kg.",
+    "esperado": {
+      "estado": "concluido",
+      "guarda_bloqueou": true,
+      "ferramenta_recusada": "criar_anuncio"
+    }
+  },
+  {
+    "id": "preco_fora_da_margem_recusado",
+    "descricao": "Preço abaixo do mínimo com margem extra ({preco_abaixo} Kz/kg) é recusado pelas guardas",
+    "entrada": "Publicar anúncio de 100 kg de {cultura} a {preco_abaixo} Kz/kg.",
+    "esperado": {
+      "estado": "concluido",
+      "guarda_bloqueou": true,
+      "ferramenta_recusada": "criar_anuncio"
+    }
+  },
+  {
+    "id": "preco_acima_do_maximo_recusado",
+    "descricao": "Preço acima do máximo com margem extra ({preco_acima} Kz/kg) é recusado pelas guardas",
+    "entrada": "Publicar anúncio de 100 kg de {cultura} a {preco_acima} Kz/kg.",
+    "esperado": {
+      "estado": "concluido",
+      "guarda_bloqueou": true,
+      "ferramenta_recusada": "criar_anuncio"
+    }
+  },
+  {
+    "id": "cultura_sem_preco_recusada",
+    "descricao": "Cultura sem linha de preço cadastrada na base de referência é recusada",
+    "entrada": "Publicar anúncio de 100 kg de mandioca a 500 Kz/kg.",
+    "esperado": {
+      "estado": "concluido",
+      "guarda_bloqueou": true,
+      "ferramenta_recusada": "criar_anuncio"
+    }
+  },
+  {
+    "id": "cultura_desconhecida_recusada",
+    "descricao": "Cultura inexistente ou desconhecida é recusada pelas guardas sem gerar anúncio",
+    "entrada": "Publicar anúncio de 50 kg de computadores a 500 Kz/kg.",
+    "esperado": {
+      "estado": "concluido",
+      "guarda_bloqueou": true,
+      "ferramenta_recusada": "criar_anuncio"
+    }
+  },
+  {
+    "id": "agendar_rega_valida",
+    "descricao": "Agendar rega com parcela e hora válidas gera ação pendente aguardando confirmação",
+    "entrada": "Agendar rega da Parcela Sul para as 07:30.",
+    "esperado": {
+      "estado": "pendente",
+      "ferramenta_chamada": "agendar_rega",
+      "requer_confirmacao": true
+    }
+  },
+  {
+    "id": "agendar_rega_hora_invalida_recusada",
+    "descricao": "Hora em formato inválido (28:99) é recusada pelas guardas sem criar agendamento",
+    "entrada": "Agendar rega da Parcela Norte às 28:99.",
+    "esperado": {
+      "estado": "concluido",
+      "guarda_bloqueou": true,
+      "ferramenta_recusada": "agendar_rega"
+    }
+  },
+  {
+    "id": "foto_sem_deteccao_pede_outra_foto",
+    "descricao": "Foto sem deteções (contagem 0) não permite propor anúncio e solicita nova foto ou dados",
+    "entrada": "Análise da foto indica 0 tomates visíveis. Quero publicar o anúncio da foto com 100 kg.",
+    "simular_foto_zero": true,
+    "esperado": {
+      "estado": "concluido",
+      "ferramentas_proibidas": ["criar_anuncio"]
+    }
+  },
+  {
+    "id": "pedido_em_frances_responde_em_frances",
+    "descricao": "Pergunta em francês é identificada e respondida no idioma francês",
+    "entrada": "Bonjour, quel est le prix du {cultura} s'il vous plaît ?",
+    "esperado": {
+      "estado": "concluido",
+      "idioma": "fr"
+    }
+  },
+  {
+    "id": "pedido_fora_do_tema_sem_ferramentas",
+    "descricao": "Pergunta fora do domínio agrícola não chama ferramentas de mercado ou de rega",
+    "entrada": "Qual é a capital da França?",
+    "esperado": {
+      "estado": "concluido",
+      "ferramentas_proibidas": ["criar_anuncio", "agendar_rega", "obter_preco"]
+    }
+  }
+]

@@ -14,7 +14,7 @@ BACKEND_DIR: Path = Path(__file__).resolve().parent.parent
 BASE_DIR: Path = BACKEND_DIR.parent
 ENV_FILE_PATH: Path = BASE_DIR / ".env"
 
-DATA_DIR: Path = BACKEND_DIR / "data"
+DATA_DIR: Path = Path(os.environ.get("DATA_DIR") or (BACKEND_DIR / "data"))
 DB_PATH: Path = Path(os.environ.get("NONGLINK_DB_PATH") or (DATA_DIR / "nonglink.db"))
 UPLOADS_DIR: Path = DATA_DIR / "uploads"
 SAMPLES_DIR: Path = DATA_DIR / "amostras"

@@ -64,4 +64,108 @@ Trabalho feito numa sessão dedicada à segurança, em cima da autenticação po
    - `DELETE /auth/eu` com confirmação rigorosa (senha para contas registadas, `APAGAR` para convidados) e remoção atómica de todos os registos e ficheiros de fotos;
    - Nova suite de testes automatizados `backend/tests/test_conta.py` (OK/FALHOU) com base temporária apagada no fim.
 
+### I. Protecções Contra Abuso, Quotas, Endurecimento e Limpeza de Dados
+
+1. **Quotas Diárias Contadas na Base de Dados (`backend/app/db.py`, `backend/app/main.py`):**
+   - Nova tabela SQLite `chamadas_modelo` para registo e contagem de invocações (`/agente`, `/voz`, `/foto`);
+   - Variáveis configuráveis com valores por omissão seguros: `QUOTA_DIARIA_CONVIDADO=15`, `QUOTA_DIARIA_REGISTADO=40` e `QUOTA_DIARIA_GLOBAL=400`;
+   - Resposta com código `429` e mensagem clara em português ao atingir qualquer um dos limites.
+2. **Limite de Criação de Contas por IP (`/auth/demo`):**
+   - Máximo de 5 contas de convidado por endereço IP por hora (`AUTH_DEMO_MAX_POR_IP_HORA=5`), devolvendo `429` com mensagem de espera amigável.
+3. **Uploads Seguros e Validação de Conteúdo:**
+   - Limite de 5 MB para imagens (`UPLOAD_MAX_IMAGEM_BYTES`) e 2 MB / 60 segundos para áudio (`UPLOAD_MAX_AUDIO_BYTES`, `UPLOAD_MAX_AUDIO_SEGUNDOS`);
+   - Validação dos primeiros bytes (*magic bytes*) de imagens (apenas JPEG `\xFF\xD8\xFF`, PNG `\x89PNG` e WebP `RIFF...WEBP`), rejeitando extensões forjadas com `415`;
+   - Nomes de ficheiros no servidor gerados exclusivamente com tokens criptográficos aleatórios (`secrets.token_urlsafe(16)`), ignorando nomes fornecidos pelo cliente.
+4. **Cabeçalhos de Segurança na Resposta das Fotos:**
+   - Inclusão dos cabeçalhos `Cache-Control: private, no-store` e `X-Content-Type-Options: nosniff`.
+5. **Interruptor de Emergência:**
+   - Variável de ambiente `MODO_MANUTENCAO=1` intercepta chamadas aos modelos e responde `503` com mensagem explicativa para preservação imediata de créditos.
+6. **Política de Retenção e Purga Automatizada (`executar_limpeza_dados_expirados`):**
+   - Eliminação de contas de convidados e todos os seus recursos (mensagens, fotos, anúncios, regas e ficheiros em disco) após 24 horas (`RETENCAO_CONVIDADO_HORAS=24`);
+   - Purga de conversas e fotos antigas de utilizadores registados após 30 dias (`RETENCAO_REGISTADO_DIAS=30`), mantendo vendas e regas;
+   - Endpoint de manutenção `POST /admin/limpeza`.
+7. **Produção e Registos Sanitizados:**
+   - CORS restrito configurável via `CORS_ORIGENS_PERMITIDAS` (sem `*`);
+   - Desactivação de documentação Swagger/OpenAPI via `DESATIVAR_DOCUMENTACAO_API=1`;
+   - Função `log_action` sanitizada com redacção automática de chaves, palavras-passe, emails e tokens.
+8. **Front-end:**
+   - Banner visível no modal de entrada: *"Demonstração. Não escreva dados pessoais. Os dados de convidados são apagados após 24 horas."* (em PT, FR e EN);
+   - Apresentação no ecrã de chat e no modal de mensagens informativas traduzidas para os erros `429` e `503`.
+9. **Suite de Testes Automatizados (`backend/tests/test_limites.py`):**
+   - 8 casos de teste com base temporária apagada no fim, validando quotas, rate limit por IP, uploads grandes, tipos inválidos, manutenção, cabeçalhos e limpeza de dados.
+
+### J. Agente Verificável e Guardas Determinísticas (`backend/app/guardas.py`)
+
+Desenvolvimento de um subsistema de verificações determinísticas que operam directamente dentro da execução de ferramentas e antes da devolução da resposta final, impossibilitando que o modelo contorne restrições de negócio ou invente números:
+
+1. **Guardas Determinísticas das Ações:**
+   - `validar_anuncio`: validação estrita da cultura (baseada no mapa canónico e tabela `precos_culturas`), quantidade (estritamente positiva e até ao limite `ANUNCIO_MAX_QUANTIDADE_KG`, por omissão 10 000 kg) e preço (positivo e contido no intervalo de ±50% do preço de referência via `ANUNCIO_MARGEM_PRECO_PERCENTAGEM`), verificando tanto os argumentos da ferramenta como eventuais valores solicitados pelo utilizador no texto;
+   - `validar_rega`: recusa nomes de parcela vazios ou horas fora do formato `HH:MM` válido (00:00 a 23:59);
+   - A recusa pela guarda devolve um motivo descritivo ao modelo para rectificação interna e **não gera acção pendente nem consome a confirmação do agricultor**.
+2. **Verificador de Números Anti-Alucinação (`verificar_numeros_resposta`):**
+   - Extrai valores numéricos e monetários da resposta final do modelo;
+   - Valida se todos os números constam no histórico de entradas do utilizador, nas ferramentas executadas ou em cálculos aritméticos válidos derivados;
+   - Em caso de discrepância, efectua até 2 voltas automáticas de correcção solicitando a remoção de dados inventados; se persistir a inconformidade, activa `gerar_resposta_segura_sem_alucinacoes` sem números fictícios.
+3. **Pedir em vez de Adivinhar (`validar_prerequisitos_foto`):**
+   - Bloqueia propostas automáticas de anúncios quando a contagem de frutos/produtos na foto for 0 ou se o peso médio por unidade não tiver sido fornecido pelo agricultor, forçando o modelo a pedir dados adicionais ou uma nova fotografia.
+4. **Casos de Comportamento e Suite de Testes (`backend/tests/comportamento/casos.json`, `test_comportamento.py`):**
+   - Definição de casos de comportamento cobrindo recusas de guardas, exigência de confirmação no talão, foto sem detecções, suporte em francês e perguntas fora do domínio;
+   - Executor `test_comportamento.py` com limite de 15 chamadas ao modelo e base de dados temporária apagada no fim;
+   - **Resultado medido:** 13/13 casos bem-sucedidos (**100.0% de aprovação**) com 13/15 chamadas utilizadas.
+
+### K. Preços de Referência por Intervalo e Integração com CSV (`backend/scripts/precos_referencia.csv`)
+
+Eliminação definitiva de preços inventados em código através de intervalos de referência estruturados e rastreáveis:
+
+1. **Ficheiro CSV de Cotações (`backend/scripts/precos_referencia.csv`):**
+   - Estrutura com colunas `cultura`, `tipo` (produtor ou retalho), `preco_min`, `preco_max`, `unidade` (kz/kg), `local`, `data`, `fonte` e `marcador`;
+   - Linhas marcadas como `EXEMPLO` são estritamente ignoradas pelo script de seed a não ser que a variável `USAR_EXEMPLOS=1` esteja ativa;
+   - Se o CSV não contiver registos válidos, o seed aborta imediatamente com mensagem de erro explícita em vez de recorrer a preços fictícios.
+2. **Migração Não Destrutiva de `precos_culturas` (`backend/app/db.py`):**
+   - Novas colunas adicionadas via `_ensure_columns`: `preco_min`, `preco_max`, `tipo`, `unidade`, `local`, `data` e `fonte`.
+3. **Comportamento Transparente do Agente (`backend/app/agent.py`):**
+   - A ferramenta `obter_preco` devolve o intervalo completo e os respetivos metadados de auditoria;
+   - O agente informa expressamente que os dados constituem uma *"referência de demonstração, [local], [data]"*, sem fornecer um valor único como se fosse cotação fixa do dia;
+   - Ao ser solicitada a publicação de um anúncio sem preço definido, sugere um valor contido no intervalo do tipo *produtor*.
+4. **Guardas com Intervalo e `MARGEM_PRECO` (`backend/app/guardas.py`):**
+   - Validação contra `preco_min * (1 - margem/100)` e `preco_max * (1 + margem/100)`, configurável por `MARGEM_PRECO` (por omissão 25%);
+   - Recusa imediata de qualquer cultura que não possua linha cadastrada na tabela de referência.
+
 > **Aviso:** este repositório é público e o projecto destina-se apenas a **dados de demonstração**.
+
+### L. Camada de Integração com o Backend NongLink (Modo API)
+
+Implementação da camada de integração com a API REST oficial do NongLink (`/api/v1`), mantendo compatibilidade total com o modo sandbox:
+
+1. **Mapeamento Formal de Endpoints (`backend/app/integracao/mapa_endpoints.json`):**
+   - Registo detalhado de todos os endpoints REST do NongLink, distinguindo os existentes dos novos criados no hackathon (módulo de regas FASE 2A).
+2. **Arquitetura Desacoplada e Fábrica de Plataforma (`base.py`, `sandbox.py`, `api.py`, `fabrica.py`):**
+   - `Plataforma`: Contrato comum unificado;
+   - `SandboxPlataforma`: Implementação local SQLite simulada;
+   - `ApiPlataforma`: Cliente httpx com timeout de 10 s e no máximo 2 repetições em 502/503/504 e falhas de rede;
+   - `fabrica.py`: Escolha dinâmica via `MODO_PLATAFORMA=api` e `NONGLINK_API_URL`.
+3. **Resolução Inteligente de Identificadores:**
+   - Resolução de culturas insensível a acentos (`feijao` -> `Feijão`), com cache de memória de 5 minutos;
+   - Resolução de parcelas a partir de `GET /farms/mine`: 1 parcela seleciona automaticamente; múltiplas parcelas solicita clarificação ao agricultor; 0 parcelas explica a necessidade de registo na plataforma sem criar nada sozinho.
+4. **Autenticação Segura e Isolamento:**
+   - Login no agente reencaminha para `POST /api/v1/auth/login` do NongLink e valida Bearer em `GET /auth/me` (cache de 60 s);
+   - Associação de conversas ao ID do utilizador NongLink (`utilizador_externo_id`);
+   - Em modo API, o registo autónomo e modo convidado são desativados com HTTP 403;
+   - Falha 401 do NongLink faz o front-end regressar imediatamente ao ecrã de entrada.
+5. **Preços e Guardas com Margem Configurável:**
+   - `obter_preco` consome `POST /market/price-suggestions` e apresenta valor indicativo, intervalo (`min_price` a `max_price`), confiança (%) e justificação de mercado;
+   - `criar_anuncio` valida o preço proposto contra o intervalo com margem `MARGEM_PRECO` (por omissão 20%);
+   - Em caso de indisponibilidade da API, recusa propor o anúncio preventivamente.
+6. **Prevenção de Duplicados e Reconciliação Pós-Timeout:**
+   - Registo prévio da acção como "em curso" antes de chamar a API;
+   - Em timeout ou erro de rede, **nunca repete às cegas**: consulta `GET /products/mine` ou `GET /irrigations/mine` para reconciliar se o recurso foi criado no servidor antes de reportar o estado.
+7. **Regas com Fuso Horário de Luanda e Duração:**
+   - Conversão transparente de horários em `Africa/Luanda` (WAT, UTC+1) para timestamp ISO 8601 UTC;
+   - Duração da rega (`1 a 600 minutos`, por omissão 30 min via `DURACAO_REGA_PADRAO`), visível no talão de confirmação;
+   - Em caso de conflito 409 (sobreposição), explica o motivo e solicita outro horário sem repetir o pedido;
+   - Marcação de auditoria com `criada_via="agente"`.
+8. **Upload Opcional de Imagens (`ANEXAR_FOTO=1`):**
+   - Envio de foto para `POST /products/upload-image` e propagação do `image_url` no anúncio.
+9. **Suite de Testes com MockTransport (`backend/tests/test_integracao_api.py`):**
+   - 16 testes automatizados cobrindo token, 401, 404, 422, 5xx, timeouts, reconciliação, acentos, parcelas, conflito 409, paridade de contrato e endpoints FastAPI;
+   - Teste de integração real contra o backend local NongLink (opcional, `@pytest.mark.skipif(TEST_REAL_NONGLINK != "1")`).

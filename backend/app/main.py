@@ -5,12 +5,15 @@ segmentation (sam-3.1), two-step confirmation (/confirmar), and SQLite persisten
 for listings, irrigations, conversations, and messages.
 """
 
+import io
 import json
+import os
 from pathlib import Path
 import secrets
 import time
 from typing import Any, Dict, List, Optional
 import uuid
+import wave
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +38,14 @@ from app.agent import (
     schedule_irrigation,
 )
 from app.config import FRONTEND_DIR, ROOT_INDEX_HTML, UPLOADS_DIR
+from app.guardas import (
+    extrair_numeros_autorizados,
+    gerar_resposta_segura_sem_alucinacoes,
+    validar_anuncio,
+    validar_prerequisitos_foto,
+    validar_rega,
+    verificar_numeros_resposta,
+)
 from app.db import (
     _verify_password,
     authenticate_user,
@@ -47,6 +58,7 @@ from app.db import (
     delete_session_token,
     delete_user_account_and_all_data,
     ensure_conversation,
+    executar_limpeza_dados_expirados,
     format_photo_attachment,
     get_conversation,
     get_photo,
@@ -62,6 +74,8 @@ from app.db import (
     list_irrigations,
     list_listings,
     list_messages,
+    obter_contagem_chamadas_hoje,
+    registar_chamada_modelo,
     update_conversation_title,
     update_message_action,
     update_user_name,
@@ -69,11 +83,59 @@ from app.db import (
 )
 from app.visao import VisionSegmentationError, resolve_photo_path
 from app.voz import VoiceTranscriptionError, transcrever
+from app.integracao.fabrica import obter_plataforma
+from app.integracao.api import ApiPlataforma
+import httpx
 from scripts.seed import seed_database
 
 init_db()
-seed_database()
+seed_database(fail_if_empty=False)
 
+
+def is_modo_manutencao() -> bool:
+    """Check if emergency maintenance mode is activated via MODO_MANUTENCAO environment variable."""
+    val = os.environ.get("MODO_MANUTENCAO", "").strip().lower()
+    return val in ("1", "true", "sim", "yes", "on")
+
+
+def is_docs_disabled() -> bool:
+    """Check if API documentation (/docs, /redoc, /openapi.json) is disabled.
+    
+    Supports ENABLE_DOCS=0 (standard) and DESATIVAR_DOCUMENTACAO_API=1.
+    """
+    if "ENABLE_DOCS" in os.environ:
+        val = os.environ.get("ENABLE_DOCS", "").strip().lower()
+        if val in ("0", "false", "nao", "não", "no", "off"):
+            return True
+        if val in ("1", "true", "sim", "yes", "on"):
+            return False
+    val_desativar = os.environ.get("DESATIVAR_DOCUMENTACAO_API", "").strip().lower()
+    return val_desativar in ("1", "true", "sim", "yes", "on")
+
+
+def get_allowed_cors_origins() -> List[str]:
+    """Return explicit allowed origins without wildcard '*' from ALLOWED_CORS_ORIGINS or CORS_ORIGENS_PERMITIDAS."""
+    raw = (
+        os.environ.get("ALLOWED_CORS_ORIGINS", "").strip()
+        or os.environ.get("CORS_ORIGENS_PERMITIDAS", "").strip()
+    )
+    if raw:
+        origins = [
+            orig.strip()
+            for orig in raw.split(",")
+            if orig.strip() and orig.strip() != "*"
+        ]
+        if origins:
+            return origins
+    return [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
+
+
+docs_disabled = is_docs_disabled()
 app = FastAPI(
     title="NongLink Field Agent API",
     description=(
@@ -82,14 +144,11 @@ app = FastAPI(
         "persistence, and two-step confirmation."
     ),
     version="4.0.0",
+    docs_url=None if docs_disabled else "/docs",
+    redoc_url=None if docs_disabled else "/redoc",
+    openapi_url=None if docs_disabled else "/openapi.json",
 )
 
-ALLOWED_CORS_ORIGINS: List[str] = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-]
 ALLOWED_CORS_HEADERS: List[str] = [
     "Authorization",
     "Content-Type",
@@ -98,7 +157,7 @@ ALLOWED_CORS_HEADERS: List[str] = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_CORS_ORIGINS,
+    allow_origins=get_allowed_cors_origins(),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=ALLOWED_CORS_HEADERS,
@@ -113,11 +172,67 @@ GENERIC_LOGIN_ERROR = "Email ou palavra-passe incorrectos"
 LOGIN_FAILURES_BY_EMAIL: Dict[str, List[float]] = {}
 LOGIN_FAILURES_BY_IP: Dict[str, List[float]] = {}
 
+# Demo account rate limits: 5 guest accounts per IP per hour
+AUTH_DEMO_WINDOW_SECONDS = 3600
+AUTH_DEMO_CREATIONS_BY_IP: Dict[str, List[float]] = {}
+
 
 def reset_login_rate_limits() -> None:
-    """Clear in-memory login failure counters."""
+    """Clear in-memory login and demo failure counters."""
     LOGIN_FAILURES_BY_EMAIL.clear()
     LOGIN_FAILURES_BY_IP.clear()
+    AUTH_DEMO_CREATIONS_BY_IP.clear()
+
+
+def check_demo_rate_limit(client_ip: str) -> None:
+    """Enforce maximum guest creations per IP per hour (AUTH_DEMO_MAX_POR_IP_HORA)."""
+    now = time.time()
+    cutoff = now - AUTH_DEMO_WINDOW_SECONDS
+    current_list = [t for t in AUTH_DEMO_CREATIONS_BY_IP.get(client_ip, []) if t > cutoff]
+    max_creations = int(os.environ.get("AUTH_DEMO_MAX_POR_IP_HORA", "5"))
+    if len(current_list) >= max_creations:
+        AUTH_DEMO_CREATIONS_BY_IP[client_ip] = current_list
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiadas contas de demonstração criadas a partir deste endereço IP. Aguarde uma hora antes de tentar novamente.",
+        )
+    current_list.append(now)
+    AUTH_DEMO_CREATIONS_BY_IP[client_ip] = current_list
+
+
+def verificar_acesso_modelo(user: Dict[str, Any], rota: str) -> None:
+    """Verify emergency maintenance mode and per-user/global daily quota before model calls."""
+    if is_modo_manutencao():
+        raise HTTPException(
+            status_code=503,
+            detail="O assistente está temporariamente em manutenção para gestão de créditos da demonstração. Volte em breve.",
+        )
+
+    user_id = str(user["id"])
+    email = str(user.get("email", "")).lower()
+    is_guest = email.endswith("@convidado.nonglink")
+
+    quota_global = int(os.environ.get("QUOTA_DIARIA_GLOBAL", "400"))
+    quota_user = int(
+        os.environ.get(
+            "QUOTA_DIARIA_CONVIDADO" if is_guest else "QUOTA_DIARIA_REGISTADO",
+            "15" if is_guest else "40",
+        )
+    )
+
+    total_global_hoje = obter_contagem_chamadas_hoje(None)
+    if total_global_hoje >= quota_global:
+        raise HTTPException(
+            status_code=429,
+            detail="Atingiu o limite diário da demonstração. Tente amanhã.",
+        )
+
+    total_user_hoje = obter_contagem_chamadas_hoje(user_id)
+    if total_user_hoje >= quota_user:
+        raise HTTPException(
+            status_code=429,
+            detail="Atingiu o limite diário da demonstração. Tente amanhã.",
+        )
 
 
 def _prune_attempts(timestamps: List[float], now: float) -> List[float]:
@@ -258,14 +373,25 @@ class ConfirmActionRequest(BaseModel):
 
 
 def _extract_latest_photo_analysis(
-    executed_actions: List[Dict[str, Any]]
+    executed_actions: List[Dict[str, Any]],
+    session_id: Optional[str] = None,
+    utilizador_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Return the latest analisar_foto result from executed_actions, if any."""
+    """Return the latest analisar_foto result from executed_actions or conversation history, if any."""
     for action in reversed(executed_actions):
         if action.get("ferramenta") == "analisar_foto":
             res = action.get("resultado")
             if isinstance(res, dict) and res.get("status") == "executed":
                 return res
+    if session_id:
+        try:
+            msgs = list_messages(session_id, utilizador_id=utilizador_id)
+            for m in reversed(msgs):
+                anexo = m.get("anexo_json")
+                if isinstance(anexo, dict) and "contagem" in anexo:
+                    return anexo
+        except Exception:
+            pass
     return None
 
 
@@ -292,12 +418,43 @@ def utilizador_atual(
             status_code=401,
             detail="Token de autenticação inválido.",
         )
+
+    plataforma = obter_plataforma()
+    if isinstance(plataforma, ApiPlataforma):
+        try:
+            nl_user = plataforma.obter_utilizador_me(token)
+            if not nl_user or not nl_user.get("id"):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Sessão inválida ou expirada no NongLink. Inicie sessão novamente.",
+                )
+            user_id = str(nl_user["id"])
+            return {
+                "id": user_id,
+                "utilizador_externo_id": user_id,
+                "nome": nl_user.get("full_name") or nl_user.get("nome") or "Utilizador NongLink",
+                "email": nl_user.get("email") or "",
+                "telefone": nl_user.get("phone") or "",
+                "token": token,
+                "region_id": nl_user.get("region_id"),
+                "role": nl_user.get("role", "farmer"),
+                "is_demo": False,
+            }
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=401,
+                detail="Sessão inválida ou expirada no NongLink. Inicie sessão novamente.",
+            ) from exc
+
     user = get_user_by_token(token)
     if not user or not user.get("id"):
         raise HTTPException(
             status_code=401,
             detail="Sessão inválida ou expirada. Inicie sessão novamente.",
         )
+    user["token"] = token
     return user
 
 
@@ -338,6 +495,54 @@ def _record_user_message_in_db(
     )
 
 
+def _processar_e_verificar_resposta_final(
+    client: Any,
+    final_text: str,
+    history: List[Any],
+    executed_actions: List[Dict[str, Any]],
+    lang: str,
+) -> str:
+    """Verifica números na resposta final e solicita até 2 reparações ao modelo se encontrar números inventados."""
+    if not final_text or not final_text.strip():
+        return final_text
+
+    user_inputs = [
+        str(m.get("content", ""))
+        for m in history
+        if isinstance(m, dict) and m.get("role") == "user"
+    ]
+    numeros_autorizados = extrair_numeros_autorizados(executed_actions, user_inputs)
+
+    tentativas = 0
+    texto_atual = final_text
+    while tentativas < 2:
+        ok_num, inventados = verificar_numeros_resposta(texto_atual, numeros_autorizados)
+        if ok_num:
+            return texto_atual
+        tentativas += 1
+        history.append({"role": "assistant", "content": texto_atual})
+        msg_correcao = (
+            f"Aviso de verificação: Os números {inventados} não foram encontrados nos dados oficiais das ferramentas nem nos cálculos apresentados. "
+            "Por favor reescreva a sua resposta mantendo apenas preços e quantidades confirmados ou omitindo os números não confirmados. Não invente números."
+        )
+        history.append({"role": "user", "content": msg_correcao})
+        try:
+            resp_corr = client.responses.create(
+                model=MODEL_NAME,
+                input=history,
+                tools=TOOLS,
+            )
+            history.extend(resp_corr.output)
+            texto_atual = resp_corr.output_text or ""
+        except Exception:
+            break
+
+    ok_final, _ = verificar_numeros_resposta(texto_atual, numeros_autorizados)
+    if not ok_final:
+        return gerar_resposta_segura_sem_alucinacoes(texto_atual, lang=lang)
+    return texto_atual
+
+
 def _continue_agent_turns(
     session_id: str,
     history: List[Any],
@@ -345,6 +550,7 @@ def _continue_agent_turns(
     start_turn: int,
     executed_actions: List[Dict[str, Any]],
     utilizador_id: Optional[str] = None,
+    user: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run or resume the agent loop up to MAX_TURNS, pausing on side-effecting tools."""
     client = create_meta_client()
@@ -368,8 +574,17 @@ def _continue_agent_turns(
         ]
 
         if not function_calls:
-            final_text = response.output_text or ""
-            photo_analysis = _extract_latest_photo_analysis(executed_actions)
+            raw_text = response.output_text or ""
+            final_text = _processar_e_verificar_resposta_final(
+                client=client,
+                final_text=raw_text,
+                history=history,
+                executed_actions=executed_actions,
+                lang=lang,
+            )
+            photo_analysis = _extract_latest_photo_analysis(
+                executed_actions, session_id=session_id, utilizador_id=utilizador_id
+            )
             anexo_payload = (
                 format_photo_attachment(photo_analysis) if photo_analysis else None
             )
@@ -401,7 +616,12 @@ def _continue_agent_turns(
 
             if call.name == "obter_preco":
                 cultura = str(parsed_args.get("cultura", ""))
-                tool_output = get_crop_price(cultura=cultura)
+                plataforma = obter_plataforma()
+                token = user.get("token") if user else None
+                if isinstance(plataforma, ApiPlataforma):
+                    tool_output = plataforma.obter_preco(cultura=cultura, token=token)
+                else:
+                    tool_output = get_crop_price(cultura=cultura)
                 executed_actions.append(
                     {
                         "ferramenta": "obter_preco",
@@ -454,20 +674,118 @@ def _continue_agent_turns(
                 )
                 continue
 
-            if call.name in ("criar_anuncio", "agendar_rega"):
+            if call.name == "criar_anuncio":
+                cultura = str(parsed_args.get("cultura", ""))
+                try:
+                    qty = float(parsed_args.get("quantidade_kg", 0))
+                except (ValueError, TypeError):
+                    qty = 0.0
+                try:
+                    price_kz = float(parsed_args.get("preco_kz_kg", 0))
+                except (ValueError, TypeError):
+                    price_kz = 0.0
+
+                # 1. Guarda de pré-requisitos de foto (não adivinhar com contagem 0 ou sem peso médio)
+                photo_analysis = _extract_latest_photo_analysis(
+                    executed_actions, session_id=session_id, utilizador_id=utilizador_id
+                )
+                user_text_history = " ".join(
+                    str(m.get("content", ""))
+                    for m in history
+                    if isinstance(m, dict) and m.get("role") == "user"
+                )
+                ok_foto, msg_foto = validar_prerequisitos_foto(photo_analysis, user_text_history)
+                if not ok_foto:
+                    refusal_output = {
+                        "status": "recusado_pelas_guardas",
+                        "ferramenta": "criar_anuncio",
+                        "motivo": msg_foto,
+                    }
+                    executed_actions.append(
+                        {
+                            "ferramenta": "criar_anuncio",
+                            "argumentos": parsed_args,
+                            "estado": "recusada_pelas_guardas",
+                            "resultado": refusal_output,
+                        }
+                    )
+                    history.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": call.call_id,
+                            "output": json.dumps(refusal_output, ensure_ascii=False),
+                        }
+                    )
+                    continue
+
+                # 2. Guarda em modo API: validação de preço contra a API oficial do NongLink
+                plataforma = obter_plataforma()
+                token = user.get("token") if user else None
+                if isinstance(plataforma, ApiPlataforma):
+                    ok_api, msg_api, _ = plataforma.validar_preco(
+                        cultura=cultura, preco_kz_kg=price_kz, token=token
+                    )
+                    if not ok_api:
+                        refusal_output = {
+                            "status": "recusado_pelas_guardas",
+                            "ferramenta": "criar_anuncio",
+                            "motivo": msg_api,
+                        }
+                        executed_actions.append(
+                            {
+                                "ferramenta": "criar_anuncio",
+                                "argumentos": parsed_args,
+                                "estado": "recusada_pelas_guardas",
+                                "resultado": refusal_output,
+                            }
+                        )
+                        history.append(
+                            {
+                                "type": "function_call_output",
+                                "call_id": call.call_id,
+                                "output": json.dumps(refusal_output, ensure_ascii=False),
+                            }
+                        )
+                        continue
+
+                # 3. Guardas de cultura, quantidade e preço
+                ok_anuncio, msg_anuncio = validar_anuncio(
+                    cultura, qty, price_kz, historico_texto=user_text_history
+                )
+                if not ok_anuncio:
+                    refusal_output = {
+                        "status": "recusado_pelas_guardas",
+                        "ferramenta": "criar_anuncio",
+                        "motivo": msg_anuncio,
+                    }
+                    executed_actions.append(
+                        {
+                            "ferramenta": "criar_anuncio",
+                            "argumentos": parsed_args,
+                            "estado": "recusada_pelas_guardas",
+                            "resultado": refusal_output,
+                        }
+                    )
+                    history.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": call.call_id,
+                            "output": json.dumps(refusal_output, ensure_ascii=False),
+                        }
+                    )
+                    continue
+
+                # Passou todas as guardas -> cria ação pendente de confirmação
                 description = build_action_description(call.name, parsed_args, lang=lang)
                 action_payload: Dict[str, Any] = {
                     "ferramenta": call.name,
-                    "tipo": "rega" if call.name == "agendar_rega" else "venda",
+                    "tipo": "venda",
                     "argumentos": parsed_args,
                     "descricao": description,
+                    "preco_kg": price_kz,
+                    "total": round(qty * price_kz, 2),
                     **parsed_args,
                 }
-                if call.name == "criar_anuncio":
-                    qty = float(parsed_args.get("quantidade_kg", 0))
-                    price_kz = float(parsed_args.get("preco_kz_kg", 0))
-                    action_payload["preco_kg"] = price_kz
-                    action_payload["total"] = round(qty * price_kz, 2)
                 log_action(
                     call.name,
                     parsed_args,
@@ -475,7 +793,6 @@ def _continue_agent_turns(
                     {"sessao": session_id, "descricao": description},
                 )
 
-                photo_analysis = _extract_latest_photo_analysis(executed_actions)
                 anexo_payload = (
                     format_photo_attachment(photo_analysis) if photo_analysis else None
                 )
@@ -491,6 +808,128 @@ def _continue_agent_turns(
 
                 PENDING_SESSIONS[session_id] = {
                     "utilizador_id": utilizador_id,
+                    "user": user,
+                    "token": token,
+                    "foto_id": (photo_analysis.get("foto_id") if photo_analysis else None) or SESSION_LAST_PHOTO.get(session_id),
+                    "history": history,
+                    "pending_message_id": pending_msg["id"],
+                    "pending_call": {
+                        "call_id": call.call_id,
+                        "ferramenta": call.name,
+                        "argumentos": parsed_args,
+                    },
+                    "remaining_calls": [
+                        {
+                            "call_id": rem.call_id,
+                            "ferramenta": rem.name,
+                            "argumentos": (
+                                json.loads(rem.arguments) if rem.arguments else {}
+                            ),
+                        }
+                        for rem in function_calls[idx + 1 :]
+                    ],
+                    "turn": turn,
+                    "lang": lang,
+                    "executed_actions": executed_actions,
+                    "descricao": description,
+                }
+
+                return {
+                    "estado": "pendente",
+                    "sessao": session_id,
+                    "conversa_id": session_id,
+                    "mensagem_id": pending_msg["id"],
+                    "accao": action_payload,
+                    "accao_json": action_payload,
+                    "estado_accao": "pendente",
+                    "descricao": description,
+                    "resposta": description,
+                    "idioma": lang,
+                    "accoes": executed_actions,
+                    "analise_foto": photo_analysis,
+                    "anexo_json": anexo_payload,
+                }
+
+            if call.name == "agendar_rega":
+                parcela = str(parsed_args.get("parcela", ""))
+                hora = str(parsed_args.get("hora", ""))
+
+                duracao_arg = parsed_args.get("duracao_minutos")
+                if duracao_arg is None:
+                    try:
+                        duracao_arg = int(os.environ.get("DURACAO_REGA_PADRAO", "30"))
+                    except (ValueError, TypeError):
+                        duracao_arg = 30
+                else:
+                    try:
+                        duracao_arg = int(duracao_arg)
+                    except (ValueError, TypeError):
+                        duracao_arg = 30
+                duracao_arg = max(1, min(600, duracao_arg))
+                parsed_args["duracao_minutos"] = duracao_arg
+
+                # Guarda de parcela e hora válida
+                ok_rega, msg_rega = validar_rega(parcela, hora)
+                if not ok_rega:
+                    refusal_output = {
+                        "status": "recusado_pelas_guardas",
+                        "ferramenta": "agendar_rega",
+                        "motivo": msg_rega,
+                    }
+                    executed_actions.append(
+                        {
+                            "ferramenta": "agendar_rega",
+                            "argumentos": parsed_args,
+                            "estado": "recusada_pelas_guardas",
+                            "resultado": refusal_output,
+                        }
+                    )
+                    history.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": call.call_id,
+                            "output": json.dumps(refusal_output, ensure_ascii=False),
+                        }
+                    )
+                    continue
+
+                # Passou as guardas -> cria ação pendente de confirmação
+                description = build_action_description(call.name, parsed_args, lang=lang)
+                action_payload: Dict[str, Any] = {
+                    "ferramenta": call.name,
+                    "tipo": "rega",
+                    "argumentos": parsed_args,
+                    "descricao": description,
+                    **parsed_args,
+                }
+                log_action(
+                    call.name,
+                    parsed_args,
+                    "PENDING_WEB_CONFIRMATION",
+                    {"sessao": session_id, "descricao": description},
+                )
+
+                photo_analysis = _extract_latest_photo_analysis(
+                executed_actions, session_id=session_id, utilizador_id=utilizador_id
+            )
+                anexo_payload = (
+                    format_photo_attachment(photo_analysis) if photo_analysis else None
+                )
+                pending_msg = insert_message(
+                    conversa_id=session_id,
+                    papel="agente",
+                    texto=description,
+                    accao_json=action_payload,
+                    estado_accao="pendente",
+                    anexo_json=anexo_payload,
+                    utilizador_id=utilizador_id,
+                )
+
+                PENDING_SESSIONS[session_id] = {
+                    "utilizador_id": utilizador_id,
+                    "user": user,
+                    "token": token,
+                    "foto_id": (photo_analysis.get("foto_id") if photo_analysis else None) or SESSION_LAST_PHOTO.get(session_id),
                     "history": history,
                     "pending_message_id": pending_msg["id"],
                     "pending_call": {
@@ -539,7 +978,14 @@ def _continue_agent_turns(
                 }
             )
 
-        final_text = response.output_text or ""
+        raw_text = response.output_text or ""
+        final_text = _processar_e_verificar_resposta_final(
+            client=client,
+            final_text=raw_text,
+            history=history,
+            executed_actions=executed_actions,
+            lang=lang,
+        )
 
     photo_analysis = _extract_latest_photo_analysis(executed_actions)
     anexo_payload = format_photo_attachment(photo_analysis) if photo_analysis else None
@@ -569,22 +1015,86 @@ def _execute_or_cancel_pending_call(
     arguments: Dict[str, Any],
     confirmed: bool,
     utilizador_id: Optional[str] = None,
+    user: Optional[Dict[str, Any]] = None,
+    foto_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Execute or cancel a pending criar_anuncio or agendar_rega call."""
+    """Execute or cancel a pending criar_anuncio or agendar_rega call with safety guard validation."""
+    plataforma = obter_plataforma()
+    token = user.get("token") if user else None
+    if isinstance(plataforma, ApiPlataforma):
+        if tool_name == "criar_anuncio":
+            cultura = str(arguments.get("cultura", ""))
+            try:
+                quantidade_kg = float(arguments.get("quantidade_kg", 0))
+            except (ValueError, TypeError):
+                quantidade_kg = 0.0
+            try:
+                preco_kz_kg = float(arguments.get("preco_kz_kg", 0))
+            except (ValueError, TypeError):
+                preco_kz_kg = 0.0
+            qualidade = arguments.get("qualidade")
+            certificacao = arguments.get("certificacao")
+            return plataforma.criar_anuncio(
+                cultura=cultura,
+                quantidade_kg=quantidade_kg,
+                preco_kz_kg=preco_kz_kg,
+                confirmed=confirmed,
+                user=user or {"id": utilizador_id},
+                token=token,
+                foto_id=foto_id or arguments.get("foto_id"),
+                qualidade=qualidade,
+                certificacao=certificacao,
+            )
+        if tool_name == "agendar_rega":
+            parcela = str(arguments.get("parcela", ""))
+            hora = str(arguments.get("hora", ""))
+            duracao = arguments.get("duracao_minutos")
+            return plataforma.agendar_rega(
+                parcela=parcela,
+                hora=hora,
+                confirmed=confirmed,
+                user=user or {"id": utilizador_id},
+                token=token,
+                duracao_minutos=duracao,
+            )
+
     status_label = "EXECUTED" if confirmed else "CANCELLED_BY_USER"
     if tool_name == "criar_anuncio":
+        cultura = str(arguments.get("cultura", ""))
+        try:
+            quantidade_kg = float(arguments.get("quantidade_kg", 0))
+        except (ValueError, TypeError):
+            quantidade_kg = 0.0
+        try:
+            preco_kz_kg = float(arguments.get("preco_kz_kg", 0))
+        except (ValueError, TypeError):
+            preco_kz_kg = 0.0
+
+        if confirmed:
+            ok_anuncio, msg_anuncio = validar_anuncio(cultura, quantidade_kg, preco_kz_kg)
+            if not ok_anuncio:
+                return {"status": "error", "message": msg_anuncio}
+
         return create_listing(
-            cultura=str(arguments.get("cultura", "")),
-            quantidade_kg=float(arguments.get("quantidade_kg", 0)),
-            preco_kz_kg=float(arguments.get("preco_kz_kg", 0)),
+            cultura=cultura,
+            quantidade_kg=quantidade_kg,
+            preco_kz_kg=preco_kz_kg,
             confirmed=confirmed,
             status_label=status_label,
             utilizador_id=utilizador_id,
         )
     if tool_name == "agendar_rega":
+        parcela = str(arguments.get("parcela", ""))
+        hora = str(arguments.get("hora", ""))
+
+        if confirmed:
+            ok_rega, msg_rega = validar_rega(parcela, hora)
+            if not ok_rega:
+                return {"status": "error", "message": msg_rega}
+
         return schedule_irrigation(
-            parcela=str(arguments.get("parcela", "")),
-            hora=str(arguments.get("hora", "")),
+            parcela=parcela,
+            hora=hora,
             confirmed=confirmed,
             status_label=status_label,
             utilizador_id=utilizador_id,
@@ -634,17 +1144,21 @@ def serve_index(
 
 
 @app.get("/health")
-def health_check(
-    user: Dict[str, Any] = Depends(utilizador_atual),
-) -> Dict[str, str]:
-    """Protected health check endpoint."""
-    _ = user
-    return {"status": "ok", "service": "nonglink-agent", "model": MODEL_NAME}
+def health_check() -> Dict[str, str]:
+    """Public health check endpoint returning {"estado": "ok"} without touching DB or model."""
+    return {"estado": "ok", "status": "ok"}
 
 
 @app.post("/auth/registar")
 def post_auth_register(payload: RegisterUserRequest) -> Dict[str, Any]:
     """Register a new user account in SQLite and return an active session token."""
+    plataforma = obter_plataforma()
+    if isinstance(plataforma, ApiPlataforma):
+        raise HTTPException(
+            status_code=403,
+            detail="O registo autónomo está desativado quando integrado com a plataforma NongLink. Use as credenciais do NongLink.",
+        )
+
     try:
         user = create_user(
             nome=payload.nome,
@@ -668,6 +1182,43 @@ def post_auth_login(
     request: Request = None,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
     """Authenticate an existing user with email and password, enforcing 5 failures / 15 min per email and IP."""
+    plataforma = obter_plataforma()
+    if isinstance(plataforma, ApiPlataforma):
+        try:
+            auth_data = plataforma.autenticar(
+                identifier=payload.email,
+                password=payload.senha,
+            )
+            nl_user = auth_data.get("user") or {}
+            user_id = str(nl_user.get("id", ""))
+            return {
+                "status": "ok",
+                "utilizador": {
+                    "id": user_id,
+                    "utilizador_externo_id": user_id,
+                    "nome": nl_user.get("full_name") or nl_user.get("nome") or "",
+                    "email": nl_user.get("email") or payload.email,
+                    "telefone": nl_user.get("phone") or "",
+                    "is_demo": False,
+                },
+                "token": auth_data.get("access_token"),
+            }
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401:
+                raise HTTPException(
+                    status_code=401,
+                    detail=GENERIC_LOGIN_ERROR,
+                ) from exc
+            raise HTTPException(
+                status_code=exc.response.status_code,
+                detail=f"Erro de autenticação no NongLink: {exc.response.text}",
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Falha de comunicação com o serviço de autenticação NongLink: {str(exc)}",
+            ) from exc
+
     clean_email = (payload.email or "").strip().lower()
     client_ip = (
         request.client.host
@@ -702,8 +1253,21 @@ def post_auth_login(
 
 
 @app.post("/auth/demo")
-def post_auth_demo() -> Dict[str, Any]:
+def post_auth_demo(request: Request = None) -> Dict[str, Any]:  # type: ignore[assignment]
     """Create a new isolated temporary guest account (24h session, no password) and return its session."""
+    plataforma = obter_plataforma()
+    if isinstance(plataforma, ApiPlataforma):
+        raise HTTPException(
+            status_code=403,
+            detail="O modo convidado está desativado quando integrado com a plataforma NongLink.",
+        )
+
+    client_ip = (
+        request.client.host
+        if request is not None and getattr(request, "client", None) is not None
+        else "127.0.0.1"
+    ) or "127.0.0.1"
+    check_demo_rate_limit(client_ip)
     user = create_guest_user()
     token = create_session_token(user["id"], is_guest=True)
     return {
@@ -1024,6 +1588,13 @@ def get_listings(
     user: Dict[str, Any] = Depends(utilizador_atual),
 ) -> List[Dict[str, Any]]:
     """Return marketplace listings belonging exclusively to the authenticated user."""
+    plataforma = obter_plataforma()
+    token = user.get("token")
+    if isinstance(plataforma, ApiPlataforma) and token:
+        try:
+            return plataforma.listar_anuncios(user=user, token=token)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Erro ao obter anúncios do NongLink: {exc}") from exc
     return list_listings(utilizador_id=str(user["id"]))
 
 
@@ -1032,6 +1603,13 @@ def get_irrigations(
     user: Dict[str, Any] = Depends(utilizador_atual),
 ) -> List[Dict[str, Any]]:
     """Return scheduled irrigations belonging exclusively to the authenticated user."""
+    plataforma = obter_plataforma()
+    token = user.get("token")
+    if isinstance(plataforma, ApiPlataforma) and token:
+        try:
+            return plataforma.listar_regas(user=user, token=token)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Erro ao obter regas do NongLink: {exc}") from exc
     return list_irrigations(utilizador_id=str(user["id"]))
 
 
@@ -1054,7 +1632,15 @@ def get_uploaded_photo(
         if ext == ".webp"
         else "image/jpeg"
     )
-    return Response(content=path.read_bytes(), media_type=media_type)
+    headers = {
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    return Response(
+        content=path.read_bytes(),
+        media_type=media_type,
+        headers=headers,
+    )
 
 
 @app.post("/foto")
@@ -1066,7 +1652,8 @@ async def post_photo(
     file: Optional[UploadFile] = File(default=None),
     user: Dict[str, Any] = Depends(utilizador_atual),
 ) -> Dict[str, Any]:
-    """Receive a photo via multipart/form-data, save it with a random ID, and record ownership."""
+    """Receive a photo via multipart/form-data, validate size and magic bytes, and record model call."""
+    verificar_acesso_modelo(user, rota="/foto")
     user_id = str(user["id"])
     upload = imagem or foto or ficheiro or file
     if upload is None:
@@ -1079,22 +1666,46 @@ async def post_photo(
     if not raw_bytes:
         raise HTTPException(status_code=422, detail="O ficheiro de imagem está vazio.")
 
+    # Validate image size (up to 5 MB)
+    max_img_bytes = int(os.environ.get("UPLOAD_MAX_IMAGEM_BYTES", str(5 * 1024 * 1024)))
+    if len(raw_bytes) > max_img_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail="Ficheiro demasiado grande. O limite máximo para imagens é de 5 MB.",
+        )
+
+    # Validate magic bytes (JPEG, PNG, WebP)
+    is_jpeg = raw_bytes.startswith(b"\xFF\xD8\xFF")
+    is_png = raw_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+    is_webp = (
+        len(raw_bytes) >= 12
+        and raw_bytes[:4] == b"RIFF"
+        and raw_bytes[8:12] == b"WEBP"
+    )
+    if not (is_jpeg or is_png or is_webp):
+        raise HTTPException(
+            status_code=415,
+            detail="Formato de ficheiro inválido. São permitidas apenas imagens JPEG, PNG ou WebP.",
+        )
+
+    canonical_ext = ".jpg" if is_jpeg else (".png" if is_png else ".webp")
+
     session_id = sessao.strip() or "default"
     try:
         ensure_conversation(session_id, utilizador_id=user_id)
     except PermissionError as exc:
         raise HTTPException(status_code=404, detail="Conversa não encontrada.") from exc
 
-    ext = Path(upload.filename or "foto.jpg").suffix.lower()
-    if ext not in (".jpg", ".jpeg", ".png", ".webp"):
-        ext = ".jpg"
-
-    foto_id = secrets.token_urlsafe(12)
-    dest_path = UPLOADS_DIR / f"{foto_id}{ext}"
+    # Server-generated random filename, never client-provided
+    foto_id = secrets.token_urlsafe(16)
+    dest_path = UPLOADS_DIR / f"{foto_id}{canonical_ext}"
     dest_path.write_bytes(raw_bytes)
 
     insert_photo(utilizador_id=user_id, caminho=str(dest_path), foto_id=foto_id)
     SESSION_LAST_PHOTO[session_id] = foto_id
+
+    # Record model usage call
+    registar_chamada_modelo(user_id=user_id, rota="/foto")
 
     log_action(
         "upload_foto",
@@ -1122,7 +1733,8 @@ async def post_voice(
     file: Optional[UploadFile] = File(default=None),
     user: Dict[str, Any] = Depends(utilizador_atual),
 ) -> Dict[str, Any]:
-    """Receive an audio recording, transcribe it, persist messages, and run the agent loop."""
+    """Receive an audio recording, validate size and duration, transcribe it, and run the agent loop."""
+    verificar_acesso_modelo(user, rota="/voz")
     user_id = str(user["id"])
     upload = audio or ficheiro or file
     if upload is None:
@@ -1135,17 +1747,49 @@ async def post_voice(
     if not raw_bytes:
         raise HTTPException(status_code=422, detail="O ficheiro de áudio está vazio.")
 
+    # Validate audio size (up to 2 MB)
+    max_audio_bytes = int(os.environ.get("UPLOAD_MAX_AUDIO_BYTES", str(2 * 1024 * 1024)))
+    if len(raw_bytes) > max_audio_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail="Ficheiro demasiado grande. O limite máximo para áudio é de 2 MB.",
+        )
+
+    # Validate audio duration (up to 60 seconds)
+    max_audio_sec = int(os.environ.get("UPLOAD_MAX_AUDIO_SEGUNDOS", "60"))
+    if raw_bytes.startswith(b"RIFF") and len(raw_bytes) >= 44 and raw_bytes[8:12] == b"WAVE":
+        try:
+            with wave.open(io.BytesIO(raw_bytes), "rb") as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                if rate > 0:
+                    duration = frames / float(rate)
+                    if duration > max_audio_sec:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Gravação demasiado longa ({duration:.1f}s). O limite máximo para áudio é de {max_audio_sec} segundos.",
+                        )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
     session_id = sessao.strip() or "default"
     if foto_id:
         if get_photo(foto_id.strip(), utilizador_id=user_id) is None:
             raise HTTPException(status_code=404, detail="Foto não encontrada.")
 
-    ext = Path(upload.filename or "voz.wav").suffix.lower() or ".wav"
-    temp_audio_name = f"voz_{uuid.uuid4().hex[:8]}{ext}"
+    # Server-generated random filename, never client filename
+    client_ext = Path(upload.filename or "voz.wav").suffix.lower()
+    ext = client_ext if client_ext in (".wav", ".mp3", ".ogg", ".m4a", ".webm") else ".wav"
+    temp_audio_name = f"voz_{secrets.token_hex(8)}{ext}"
     temp_audio_path = UPLOADS_DIR / temp_audio_name
     temp_audio_path.write_bytes(raw_bytes)
 
     lang_hint = idioma.strip().lower() if idioma else "pt"
+
+    # Record model usage call
+    registar_chamada_modelo(user_id=user_id, rota="/voz")
 
     try:
         transcript_text = transcrever(str(temp_audio_path), idioma_dica=lang_hint)
@@ -1210,6 +1854,7 @@ async def post_voice(
             start_turn=1,
             executed_actions=[],
             utilizador_id=user_id,
+            user=user,
         )
     except AuthenticationError as exc:
         raise HTTPException(
@@ -1237,6 +1882,7 @@ def post_agent(
     user: Dict[str, Any] = Depends(utilizador_atual),
 ) -> Dict[str, Any]:
     """Run the agent loop, persist messages in SQLite, and pause on any action requiring confirmation."""
+    verificar_acesso_modelo(user, rota="/agente")
     user_id = str(user["id"])
     user_text = (payload.mensagem or payload.message or "").strip()
     if not user_text:
@@ -1263,6 +1909,9 @@ def post_agent(
         utilizador_id=user_id,
     )
 
+    # Record model usage call
+    registar_chamada_modelo(user_id=user_id, rota="/agente")
+
     lang = (
         payload.idioma
         if payload.idioma in ("pt", "fr", "en")
@@ -1283,6 +1932,7 @@ def post_agent(
             start_turn=1,
             executed_actions=[],
             utilizador_id=user_id,
+            user=user,
         )
     except AuthenticationError as exc:
         raise HTTPException(
@@ -1340,6 +1990,8 @@ def post_confirm(
         arguments=pending_call["argumentos"],
         confirmed=payload.confirmar,
         utilizador_id=user_id,
+        user=user,
+        foto_id=pending_state.get("foto_id") or SESSION_LAST_PHOTO.get(session_id),
     )
 
     db_action_state = "confirmada" if payload.confirmar else "cancelada"
@@ -1411,6 +2063,8 @@ def post_confirm(
                 arguments=extra_call["argumentos"],
                 confirmed=payload.confirmar,
                 utilizador_id=user_id,
+                user=user,
+                foto_id=pending_state.get("foto_id") or SESSION_LAST_PHOTO.get(session_id),
             )
             executed_actions.append(
                 {
@@ -1436,6 +2090,7 @@ def post_confirm(
             start_turn=turn + 1,
             executed_actions=executed_actions,
             utilizador_id=user_id,
+            user=user,
         )
     except AuthenticationError as exc:
         raise HTTPException(
@@ -1472,3 +2127,18 @@ def post_confirm(
         "accoes": executed_actions,
         "analise_foto": _extract_latest_photo_analysis(executed_actions),
     }
+
+
+@app.post("/admin/limpeza")
+def post_executar_limpeza(
+    user: Dict[str, Any] = Depends(utilizador_atual),
+) -> Dict[str, Any]:
+    """Execute cleanup of expired guest accounts (>24h) and registered user conversations older than 30 days."""
+    _ = user
+    horas_convidado = int(os.environ.get("RETENCAO_CONVIDADO_HORAS", "24"))
+    dias_registado = int(os.environ.get("RETENCAO_REGISTADO_DIAS", "30"))
+    resultado = executar_limpeza_dados_expirados(
+        horas_convidado=horas_convidado,
+        dias_registado=dias_registado,
+    )
+    return {"status": "ok", **resultado}

@@ -168,7 +168,14 @@ def migrate_db(db_path: Union[str, Path] = DB_FILE_PATH) -> None:
             CREATE TABLE IF NOT EXISTS precos_culturas (
                 cultura TEXT PRIMARY KEY,
                 preco_kz_kg REAL NOT NULL,
-                observacao TEXT NOT NULL
+                observacao TEXT NOT NULL,
+                preco_min REAL NULL,
+                preco_max REAL NULL,
+                tipo TEXT NULL,
+                unidade TEXT NULL,
+                local TEXT NULL,
+                data TEXT NULL,
+                fonte TEXT NULL
             )
             """
         )
@@ -234,6 +241,16 @@ def migrate_db(db_path: Union[str, Path] = DB_FILE_PATH) -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chamadas_modelo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                utilizador_id TEXT NOT NULL,
+                rota TEXT NOT NULL,
+                criado_em TEXT NOT NULL
+            )
+            """
+        )
 
         _ensure_columns(
             conn,
@@ -270,11 +287,13 @@ def migrate_db(db_path: Union[str, Path] = DB_FILE_PATH) -> None:
             [
                 ("id", "TEXT"),
                 ("utilizador_id", "TEXT NULL"),
+                ("utilizador_externo_id", "TEXT NULL"),
                 ("titulo", "TEXT NOT NULL DEFAULT 'Conversa'"),
                 ("criada_em", "TEXT NOT NULL DEFAULT ''"),
                 ("atualizada_em", "TEXT NOT NULL DEFAULT ''"),
             ],
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_conversas_ext_user ON conversas(utilizador_externo_id)")
         conv_cols = conn.execute("PRAGMA table_info(conversas)").fetchall()
         for col in conv_cols:
             if col["name"] == "utilizador_id" and col["notnull"]:
@@ -324,6 +343,19 @@ def migrate_db(db_path: Union[str, Path] = DB_FILE_PATH) -> None:
                 ("estado_accao", "TEXT NULL"),
                 ("resultado_id", "TEXT NULL"),
                 ("anexo_json", "TEXT NULL"),
+            ],
+        )
+        _ensure_columns(
+            conn,
+            "precos_culturas",
+            [
+                ("preco_min", "REAL NULL"),
+                ("preco_max", "REAL NULL"),
+                ("tipo", "TEXT NULL"),
+                ("unidade", "TEXT NULL"),
+                ("local", "TEXT NULL"),
+                ("data", "TEXT NULL"),
+                ("fonte", "TEXT NULL"),
             ],
         )
         conn.commit()
@@ -544,22 +576,67 @@ def get_photo(
 
 def upsert_crop_price(
     cultura: str,
-    preco_kz_kg: float,
-    observacao: str,
+    preco_min: Optional[float] = None,
+    preco_max: Optional[float] = None,
+    tipo: str = "retalho",
+    unidade: str = "kz/kg",
+    local: str = "Luanda",
+    data: str = "",
+    fonte: str = "",
+    observacao: str = "",
+    preco_kz_kg: Optional[float] = None,
     db_path: Union[str, Path] = DB_FILE_PATH,
+    **kwargs: Any,
 ) -> None:
-    """Insert or update a fictional crop reference price in 'precos_culturas'."""
+    """Insert or update a crop reference price interval in 'precos_culturas'."""
     init_db(db_path)
+
+    # Suporte para assinatura legada upsert_crop_price(cultura, preco_kz_kg, observacao)
+    if preco_max is None and preco_min is not None:
+        p_val = float(preco_min)
+        preco_min_val = p_val
+        preco_max_val = p_val
+        calc_preco_kz_kg = preco_kz_kg if preco_kz_kg is not None else p_val
+        obs = observacao or (tipo if isinstance(tipo, str) and tipo not in ("retalho", "produtor") else "")
+        tipo_val = "retalho" if tipo not in ("retalho", "produtor") else tipo
+    else:
+        preco_min_val = float(preco_min or 0.0)
+        preco_max_val = float(preco_max or preco_min_val)
+        calc_preco_kz_kg = preco_kz_kg if preco_kz_kg is not None else round((preco_min_val + preco_max_val) / 2.0, 2)
+        tipo_val = tipo
+        obs = observacao or f"Referência {local}, {data} (Fonte: {fonte})"
+
     with get_connection(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO precos_culturas (cultura, preco_kz_kg, observacao)
-            VALUES (?, ?, ?)
+            INSERT INTO precos_culturas (
+                cultura, preco_kz_kg, observacao,
+                preco_min, preco_max, tipo, unidade, local, data, fonte
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(cultura) DO UPDATE SET
                 preco_kz_kg = excluded.preco_kz_kg,
-                observacao = excluded.observacao
+                observacao = excluded.observacao,
+                preco_min = excluded.preco_min,
+                preco_max = excluded.preco_max,
+                tipo = excluded.tipo,
+                unidade = excluded.unidade,
+                local = excluded.local,
+                data = excluded.data,
+                fonte = excluded.fonte
             """,
-            (cultura.strip().lower(), float(preco_kz_kg), observacao),
+            (
+                cultura.strip().lower(),
+                float(calc_preco_kz_kg),
+                obs,
+                float(preco_min_val),
+                float(preco_max_val),
+                tipo_val.strip().lower(),
+                unidade.strip().lower(),
+                local.strip(),
+                data.strip(),
+                fonte.strip(),
+            ),
         )
         conn.commit()
 
@@ -567,24 +644,32 @@ def upsert_crop_price(
 def get_crop_price_from_db(
     cultura: str, db_path: Union[str, Path] = DB_FILE_PATH
 ) -> Optional[Dict[str, Any]]:
-    """Fetch a fictional crop price from 'precos_culturas' if present."""
+    """Fetch a crop reference price interval from 'precos_culturas' if present."""
     init_db(db_path)
     normalized = cultura.strip().lower()
     canonical = CROP_CANONICAL_MAP.get(normalized, normalized)
     with get_connection(db_path) as conn:
         row = conn.execute(
-            "SELECT cultura, preco_kz_kg, observacao FROM precos_culturas WHERE cultura = ?",
+            """
+            SELECT cultura, preco_min, preco_max, tipo, unidade, local, data, fonte, preco_kz_kg, observacao
+            FROM precos_culturas
+            WHERE cultura = ?
+            """,
             (canonical,),
         ).fetchone()
     return dict(row) if row else None
 
 
 def list_crop_prices(db_path: Union[str, Path] = DB_FILE_PATH) -> List[Dict[str, Any]]:
-    """Return all seeded fictional crop prices from 'precos_culturas'."""
+    """Return all seeded crop reference prices from 'precos_culturas'."""
     init_db(db_path)
     with get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT cultura, preco_kz_kg, observacao FROM precos_culturas ORDER BY cultura ASC"
+            """
+            SELECT cultura, preco_min, preco_max, tipo, unidade, local, data, fonte, preco_kz_kg, observacao
+            FROM precos_culturas
+            ORDER BY cultura ASC
+            """
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -593,22 +678,30 @@ def create_conversation(
     titulo: str = "Nova conversa",
     conversation_id: Optional[str] = None,
     utilizador_id: Optional[str] = None,
+    utilizador_externo_id: Optional[str] = None,
     db_path: Union[str, Path] = DB_FILE_PATH,
 ) -> Dict[str, Any]:
-    """Create a new conversation in 'conversas' scoped to a specific utilizador_id."""
+    """Create a new conversation in 'conversas' scoped to a specific utilizador_id / utilizador_externo_id."""
     init_db(db_path)
     conv_id = (conversation_id or str(uuid.uuid4())).strip()
     owner_id = utilizador_id.strip() if utilizador_id else None
+    ext_id = utilizador_externo_id.strip() if utilizador_externo_id else (owner_id if owner_id and owner_id.isdigit() else None)
     now = _utc_now_str()
     clean_title = (titulo or "Nova conversa").strip()
     with get_connection(db_path) as conn:
         existing = conn.execute(
-            "SELECT id, utilizador_id, titulo, criada_em, atualizada_em FROM conversas WHERE id = ?",
+            "SELECT id, utilizador_id, utilizador_externo_id, titulo, criada_em, atualizada_em FROM conversas WHERE id = ?",
             (conv_id,),
         ).fetchone()
         if existing is not None:
-            if owner_id is not None and existing["utilizador_id"] != owner_id:
-                raise PermissionError("Conversa não encontrada.")
+            if owner_id is not None:
+                matches = (
+                    existing["utilizador_id"] == owner_id
+                    or existing["utilizador_externo_id"] == owner_id
+                    or (ext_id and existing["utilizador_externo_id"] == ext_id)
+                )
+                if not matches:
+                    raise PermissionError("Conversa não encontrada.")
             conn.execute(
                 "UPDATE conversas SET atualizada_em = ? WHERE id = ?",
                 (now, conv_id),
@@ -616,19 +709,20 @@ def create_conversation(
         else:
             conn.execute(
                 """
-                INSERT INTO conversas (id, utilizador_id, titulo, criada_em, atualizada_em)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO conversas (id, utilizador_id, utilizador_externo_id, titulo, criada_em, atualizada_em)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (conv_id, owner_id, clean_title, now, now),
+                (conv_id, owner_id, ext_id, clean_title, now, now),
             )
         row = conn.execute(
-            "SELECT id, utilizador_id, titulo, criada_em, atualizada_em FROM conversas WHERE id = ?",
+            "SELECT id, utilizador_id, utilizador_externo_id, titulo, criada_em, atualizada_em FROM conversas WHERE id = ?",
             (conv_id,),
         ).fetchone()
         conn.commit()
     return dict(row) if row else {
         "id": conv_id,
         "utilizador_id": owner_id,
+        "utilizador_externo_id": ext_id,
         "titulo": clean_title,
         "criada_em": now,
         "atualizada_em": now,
@@ -646,15 +740,15 @@ def get_conversation(
         if utilizador_id is not None:
             row = conn.execute(
                 """
-                SELECT id, utilizador_id, titulo, criada_em, atualizada_em
+                SELECT id, utilizador_id, utilizador_externo_id, titulo, criada_em, atualizada_em
                 FROM conversas
-                WHERE id = ? AND utilizador_id = ?
+                WHERE id = ? AND (utilizador_id = ? OR utilizador_externo_id = ?)
                 """,
-                (conversation_id, utilizador_id),
+                (conversation_id, utilizador_id, utilizador_id),
             ).fetchone()
         else:
             row = conn.execute(
-                "SELECT id, utilizador_id, titulo, criada_em, atualizada_em FROM conversas WHERE id = ?",
+                "SELECT id, utilizador_id, utilizador_externo_id, titulo, criada_em, atualizada_em FROM conversas WHERE id = ?",
                 (conversation_id,),
             ).fetchone()
     return dict(row) if row else None
@@ -664,19 +758,27 @@ def ensure_conversation(
     conversation_id: Optional[str] = None,
     titulo: str = "Nova conversa",
     utilizador_id: Optional[str] = None,
+    utilizador_externo_id: Optional[str] = None,
     db_path: Union[str, Path] = DB_FILE_PATH,
 ) -> Dict[str, Any]:
     """Return existing conversation (verifying ownership) or create it if it does not exist."""
     if conversation_id:
         raw_existing = get_conversation(conversation_id, db_path=db_path)
         if raw_existing is not None:
-            if utilizador_id is not None and raw_existing.get("utilizador_id") != utilizador_id:
-                raise PermissionError("Conversa não encontrada.")
+            if utilizador_id is not None:
+                matches_owner = (
+                    raw_existing.get("utilizador_id") == utilizador_id
+                    or raw_existing.get("utilizador_externo_id") == utilizador_id
+                    or (utilizador_externo_id and raw_existing.get("utilizador_externo_id") == utilizador_externo_id)
+                )
+                if not matches_owner:
+                    raise PermissionError("Conversa não encontrada.")
             return raw_existing
     return create_conversation(
         titulo=titulo,
         conversation_id=conversation_id,
         utilizador_id=utilizador_id,
+        utilizador_externo_id=utilizador_externo_id,
         db_path=db_path,
     )
 
@@ -693,8 +795,8 @@ def update_conversation_title(
     with get_connection(db_path) as conn:
         if utilizador_id is not None:
             cursor = conn.execute(
-                "UPDATE conversas SET titulo = ?, atualizada_em = ? WHERE id = ? AND utilizador_id = ?",
-                (titulo.strip(), now, conversation_id, utilizador_id),
+                "UPDATE conversas SET titulo = ?, atualizada_em = ? WHERE id = ? AND (utilizador_id = ? OR utilizador_externo_id = ?)",
+                (titulo.strip(), now, conversation_id, utilizador_id, utilizador_id),
             )
             conn.commit()
             if cursor.rowcount == 0:
@@ -720,8 +822,8 @@ def delete_conversation(
     with get_connection(db_path) as conn:
         if utilizador_id:
             owner_check = conn.execute(
-                "SELECT id FROM conversas WHERE id = ? AND utilizador_id = ?",
-                (conversation_id, utilizador_id),
+                "SELECT id FROM conversas WHERE id = ? AND (utilizador_id = ? OR utilizador_externo_id = ?)",
+                (conversation_id, utilizador_id, utilizador_id),
             ).fetchone()
             if owner_check is None:
                 return False
@@ -744,23 +846,23 @@ def list_conversations(
                 like_pattern = f"%{q.strip()}%"
                 rows = conn.execute(
                     """
-                    SELECT DISTINCT c.id, c.utilizador_id, c.titulo, c.criada_em, c.atualizada_em
+                    SELECT DISTINCT c.id, c.utilizador_id, c.utilizador_externo_id, c.titulo, c.criada_em, c.atualizada_em
                     FROM conversas c
                     LEFT JOIN mensagens m ON m.conversa_id = c.id
-                    WHERE c.utilizador_id = ? AND (c.titulo LIKE ? OR m.texto LIKE ?)
+                    WHERE (c.utilizador_id = ? OR c.utilizador_externo_id = ?) AND (c.titulo LIKE ? OR m.texto LIKE ?)
                     ORDER BY c.atualizada_em DESC, c.criada_em DESC
                     """,
-                    (utilizador_id, like_pattern, like_pattern),
+                    (utilizador_id, utilizador_id, like_pattern, like_pattern),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     """
-                    SELECT id, utilizador_id, titulo, criada_em, atualizada_em
+                    SELECT id, utilizador_id, utilizador_externo_id, titulo, criada_em, atualizada_em
                     FROM conversas
-                    WHERE utilizador_id = ?
+                    WHERE utilizador_id = ? OR utilizador_externo_id = ?
                     ORDER BY atualizada_em DESC, criada_em DESC
                     """,
-                    (utilizador_id,),
+                    (utilizador_id, utilizador_id),
                 ).fetchall()
         elif q and q.strip():
             like_pattern = f"%{q.strip()}%"
@@ -1446,6 +1548,196 @@ def get_user_session_expiry(
             (token_hash, token_hash),
         ).fetchone()
         return str(row["expira_em"]) if row and row["expira_em"] else None
+
+
+def registar_chamada_modelo(
+    user_id: Optional[str] = None,
+    rota: str = "/agente",
+    utilizador_id: Optional[str] = None,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> None:
+    """Record a call made to the Meta Model API (/agente, /voz, /foto) in SQLite."""
+    uid = str(user_id or utilizador_id or "").strip()
+    init_db(db_path)
+    now_str = _utc_now_str()
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO chamadas_modelo (utilizador_id, rota, criado_em)
+            VALUES (?, ?, ?)
+            """,
+            (uid, rota, now_str),
+        )
+        conn.commit()
+
+
+def obter_contagem_chamadas_hoje(
+    utilizador_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+) -> int:
+    """Return number of model calls made today (UTC). If utilizador_id is None, return global count."""
+    init_db(db_path)
+    uid = utilizador_id or user_id
+    today_start = datetime.now(timezone.utc).strftime("%Y-%m-%d 00:00:00 UTC")
+    with get_connection(db_path) as conn:
+        if uid is not None:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) as total
+                FROM chamadas_modelo
+                WHERE utilizador_id = ? AND criado_em >= ?
+                """,
+                (uid, today_start),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) as total
+                FROM chamadas_modelo
+                WHERE criado_em >= ?
+                """,
+                (today_start,),
+            ).fetchone()
+        return int(row["total"]) if row else 0
+
+
+def executar_limpeza_dados_expirados(
+    horas_convidado: int = 24,
+    dias_registado: int = 30,
+    db_path: Union[str, Path] = DB_FILE_PATH,
+    uploads_dir: Optional[Union[str, Path]] = None,
+) -> Dict[str, Any]:
+    """Purge expired guest accounts (> horas_convidado or expired sessions) and old registered user conversations (> dias_registado).
+    
+    Deletes all related records from DB and unlinks referenced photos from disk.
+    """
+    init_db(db_path)
+    now_dt = datetime.now(timezone.utc)
+    cutoff_convidado_dt = now_dt - timedelta(hours=horas_convidado)
+    cutoff_convidado_str = _format_utc_dt(cutoff_convidado_dt)
+    cutoff_registado_dt = now_dt - timedelta(days=dias_registado)
+    cutoff_registado_str = _format_utc_dt(cutoff_registado_dt)
+
+    deleted_guests_count = 0
+    deleted_conversas_count = 0
+    total_files_deleted = 0
+
+    with get_connection(db_path) as conn:
+        # 1. Identify guest users to purge
+        guest_rows = conn.execute(
+            """
+            SELECT id, email, criado_em
+            FROM utilizadores
+            WHERE email LIKE '%@convidado.nonglink'
+            """
+        ).fetchall()
+
+        guests_to_delete = set()
+        for gr in guest_rows:
+            uid = str(gr["id"])
+            created_dt = _parse_utc_str(gr["criado_em"])
+            if created_dt and created_dt <= cutoff_convidado_dt:
+                guests_to_delete.add(uid)
+            elif not created_dt and str(gr["criado_em"]) <= cutoff_convidado_str:
+                guests_to_delete.add(uid)
+
+        # Check expired guest sessions
+        expired_sessions = conn.execute(
+            """
+            SELECT utilizador_id, expira_em
+            FROM sessoes_auth
+            WHERE expira_em IS NOT NULL AND expira_em != ''
+            """
+        ).fetchall()
+        for es in expired_sessions:
+            uid = str(es["utilizador_id"])
+            exp_dt = _parse_utc_str(es["expira_em"])
+            if exp_dt and exp_dt <= now_dt:
+                u_row = conn.execute("SELECT email FROM utilizadores WHERE id = ?", (uid,)).fetchone()
+                if u_row and str(u_row["email"]).endswith("@convidado.nonglink"):
+                    guests_to_delete.add(uid)
+
+    for guest_id in guests_to_delete:
+        photo_paths = delete_user_account_and_all_data(guest_id, db_path=db_path)
+        deleted_guests_count += 1
+        for p in photo_paths:
+            try:
+                Path(p).unlink(missing_ok=True)
+                total_files_deleted += 1
+            except Exception:
+                pass
+
+    with get_connection(db_path) as conn:
+        old_convs = conn.execute(
+            """
+            SELECT c.id, c.utilizador_id
+            FROM conversas c
+            JOIN utilizadores u ON c.utilizador_id = u.id
+            WHERE u.email NOT LIKE '%@convidado.nonglink'
+              AND (c.atualizada_em <= ? OR (c.atualizada_em = '' AND c.criada_em <= ?))
+            """,
+            (cutoff_registado_str, cutoff_registado_str),
+        ).fetchall()
+
+        old_conv_ids = [str(r["id"]) for r in old_convs]
+
+        if old_conv_ids:
+            deleted_conversas_count = len(old_conv_ids)
+            placeholders = ",".join(["?"] * len(old_conv_ids))
+
+            msg_rows = conn.execute(
+                f"SELECT anexo_json FROM mensagens WHERE conversa_id IN ({placeholders}) AND anexo_json IS NOT NULL",
+                old_conv_ids,
+            ).fetchall()
+
+            foto_ids = set()
+            for m in msg_rows:
+                try:
+                    data = json.loads(m["anexo_json"])
+                    if isinstance(data, dict):
+                        fid = data.get("foto_id") or data.get("id")
+                        if fid:
+                            foto_ids.add(str(fid).strip())
+                except Exception:
+                    pass
+
+            if foto_ids:
+                f_placeholders = ",".join(["?"] * len(foto_ids))
+                photo_rows = conn.execute(
+                    f"SELECT caminho FROM fotos WHERE id IN ({f_placeholders})",
+                    list(foto_ids),
+                ).fetchall()
+                for pr in photo_rows:
+                    if pr["caminho"]:
+                        try:
+                            Path(str(pr["caminho"])).unlink(missing_ok=True)
+                            total_files_deleted += 1
+                        except Exception:
+                            pass
+                conn.execute(
+                    f"DELETE FROM fotos WHERE id IN ({f_placeholders})",
+                    list(foto_ids),
+                )
+
+            conn.execute(
+                f"DELETE FROM mensagens WHERE conversa_id IN ({placeholders})",
+                old_conv_ids,
+            )
+            conn.execute(
+                f"DELETE FROM conversas WHERE id IN ({placeholders})",
+                old_conv_ids,
+            )
+
+        cutoff_chamadas = (now_dt - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S UTC")
+        conn.execute("DELETE FROM chamadas_modelo WHERE criado_em < ?", (cutoff_chamadas,))
+        conn.commit()
+
+    return {
+        "contas_convidado_removidas": deleted_guests_count,
+        "conversas_antigas_removidas": deleted_conversas_count,
+        "ficheiros_fotos_apagados": total_files_deleted,
+    }
 
 
 listar_anuncios = list_listings

@@ -1,0 +1,27 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+# Git & Virtual Environment
+.git
+.venv
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+
+# Data, runtime artifacts & database
+data/
+uploads/
+amostras/
+*.db
+*.sqlite*
+*.log
+testes/

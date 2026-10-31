@@ -101,6 +101,7 @@ export default function ChatVista({ conversationId = null }) {
     return false;
   });
   const [errorState, setErrorState] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
   const [retryAction, setRetryAction] = useState(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
 
@@ -300,9 +301,18 @@ export default function ChatVista({ conversationId = null }) {
 
     try {
       await requestPromise;
-    } catch {
+    } catch (err) {
       updateSessionStore(targetId, { isCalculating: false, promise: null });
       setErrorState(true);
+      if (err?.status === 429) {
+        setErrorMessage(err?.message || t.error429);
+      } else if (err?.status === 503) {
+        setErrorMessage(err?.message || t.error503);
+      } else if (err?.status === 413 || err?.status === 415) {
+        setErrorMessage(err?.message);
+      } else {
+        setErrorMessage(err?.message || t.connectionError);
+      }
       setRetryAction(() => () =>
         executeSend({ text, photoFile, targetId, baseMessages })
       );
@@ -377,9 +387,18 @@ export default function ChatVista({ conversationId = null }) {
 
     try {
       await requestPromise;
-    } catch {
+    } catch (err) {
       updateSessionStore(targetId, { isCalculating: false, promise: null });
       setErrorState(true);
+      if (err?.status === 429) {
+        setErrorMessage(err?.message || t.error429);
+      } else if (err?.status === 503) {
+        setErrorMessage(err?.message || t.error503);
+      } else if (err?.status === 413 || err?.status === 415) {
+        setErrorMessage(err?.message);
+      } else {
+        setErrorMessage(err?.message || t.connectionError);
+      }
       setRetryAction(() => () =>
         executeVoiceSend({ audioFile, targetId, baseMessages })
       );
@@ -532,13 +551,13 @@ export default function ChatVista({ conversationId = null }) {
                 </div>
               )}
 
-              {/* Connection error notice with "Tentar outra vez" */}
+              {/* Connection or Quota/Maintenance error notice with "Tentar outra vez" */}
               {errorState && (
                 <div
                   role="alert"
                   className="rounded-item border border-error/40 bg-surface p-4 text-sm text-text"
                 >
-                  <p className="mb-3">{t.connectionError}</p>
+                  <p className="mb-3">{errorMessage || t.connectionError}</p>
                   {retryAction && (
                     <button
                       type="button"

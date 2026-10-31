@@ -24,61 +24,40 @@ from app.db import (
     insert_irrigation,
     insert_listing,
 )
+from app.guardas import (
+    extrair_numeros_autorizados,
+    gerar_resposta_segura_sem_alucinacoes,
+    validar_anuncio,
+    validar_rega,
+    verificar_numeros_resposta,
+)
 from app.visao import resolve_photo_path, segmentar
 
 BASE_URL = META_BASE_URL
 MODEL_NAME = REASONING_MODEL
 MAX_TURNS = MAX_AGENT_TURNS
 
-FICTIONAL_CROP_PRICES_KZ: Dict[str, int] = {
-    "tomate": 850,
-    "tomates": 850,
-    "tomato": 850,
-    "tomatoes": 850,
-    "mandioca": 450,
-    "manioc": 450,
-    "cassava": 450,
-    "milho": 600,
-    "mais": 600,
-    "maïs": 600,
-    "maize": 600,
-    "corn": 600,
-    "feijao": 1200,
-    "feijão": 1200,
-    "haricot": 1200,
-    "haricots": 1200,
-    "bean": 1200,
-    "beans": 1200,
-    "batata": 750,
-    "batata-doce": 550,
-    "pomme de terre": 750,
-    "patate douce": 550,
-    "potato": 750,
-    "sweet potato": 550,
-    "cebola": 950,
-    "oignon": 950,
-    "onion": 950,
-    "banana": 500,
-    "banane": 500,
-    "plantain": 550,
-    "cafe": 2100,
-    "café": 2100,
-    "coffee": 2100,
-}
+FICTIONAL_CROP_PRICES_KZ: Dict[str, int] = {}
 
-DEFAULT_CROP_PRICE_KZ = 700
+DEFAULT_CROP_PRICE_KZ = 0
 
 SYSTEM_INSTRUCTIONS = """You are the NongLink Field Agent (Agente de Campo NongLink / Agent de Terrain NongLink), an agricultural assistant for smallholder farmers in Angola, DRC, and the Republic of the Congo.
 
 Strict Mandatory Rules:
 1. Language: ALWAYS reply in the exact same language used by the user: Portuguese (PT), French (FR), or English (EN). Default to Portuguese if unsure.
-2. No Hallucinated Numbers: NEVER invent statistics, percentages, yields, or prices. Only state crop prices obtained directly from calling the `obter_preco` tool, and ALWAYS explicitly mention that these prices are demonstration values ("valores de demonstração" / "valeurs de démonstration" / "demonstration values").
+2. No Hallucinated Numbers & Reference Price Ranges:
+   - NEVER invent prices, statistics, or yields.
+   - When stating crop prices obtained from `obter_preco`, ALWAYS state the full interval (`[preco_min] a [preco_max] [unidade]`), specify the type (`tipo`: produtor or retalho), and ALWAYS state: 'referência de demonstração, [local], [data]' (or localized in FR/EN).
+   - NEVER provide a single number as if it were the exact 'price of the day' or market fixed price.
 3. Ask When Information Is Missing: If any required piece of information is missing to perform an action — such as crop (`cultura`), quantity in kg (`quantidade_kg`), plot (`parcela`), or time (`hora`) — DO NOT assume, guess, or invent default values. Ask the user clearly for the missing data instead of calling the tool.
 4. Photo Analysis (`analisar_foto`) & Weight Estimation Rule:
    - When a photo (`foto_id`) is provided or mentioned, call `analisar_foto(foto_id, objecto)` to count and segment the crop using `sam-3.1`.
    - NEVER claim crop quality, freshness, ripeness, disease, pests, or phytosanitary diagnosis from the photo. ONLY report what the segmentation objectively measured: instance count (`contagem`), bounding boxes (`caixas`), and mask coverage percentage (`cobertura_percentagem`).
+   - If the photo analysis returns 0 items (contagem = 0) or lacks detections, NEVER propose `criar_anuncio` based on that photo; you MUST ask the user for a clearer/closer photo or to provide the harvest weight directly.
    - Do NOT convert the instance count into kilograms silently on your own: either ask the user for the average weight per unit (or crate) OR explicitly state that you are using a demonstration average weight estimate (e.g., 0.15 kg per tomato as a demonstration estimate) and show the full arithmetic calculation (`contagem × peso_medio_kg = quantidade_kg`) before proposing `criar_anuncio`.
-5. Price Lookup Before Listing: When the user wants to publish an ad (`criar_anuncio`) and the crop and quantity in kg are known (or calculated via the shown demonstration estimate), call `obter_preco` first to get the demonstration price in Kz/kg, and then call `criar_anuncio(cultura, quantidade_kg, preco_kz_kg)`.
+5. Price Lookup Before Listing & Suggesting Producer Prices:
+   - If the user explicitly specifies a price for their ad (e.g., 'a 2200 Kz/kg'), call `criar_anuncio` with that price (`preco_kz_kg=2200`) so that system guards can validate it against the allowed reference margin.
+   - If the user asks to publish an ad without specifying a price, call `obter_preco` first. Present the range and suggest a realistic price within the interval of type 'produtor' (or within the general interval if only 'retalho' is available), stating that it is a demonstration reference. DO NOT publish directly without user agreement on the price.
 6. Mandatory User Confirmation via Tool Call: `criar_anuncio` and `agendar_rega` never execute without user confirmation because the NongLink runtime automatically intercepts your tool call and asks the user to confirm ("s" in terminal or Confirm button in web UI / `/confirmar`). Always call `criar_anuncio` or `agendar_rega` to propose the action and never claim it was executed until the tool output confirms `"status": "executed"`.
 """
 
@@ -129,9 +108,9 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "name": "obter_preco",
         "description": (
-            "PT: Obtém o preço fictício de mercado de uma cultura agrícola em Kz/kg. | "
-            "FR: Obtient le prix fictif du marché d'une culture agricole en Kz/kg. | "
-            "EN: Gets the fictional market price of an agricultural crop in Kz/kg."
+            "PT: Obtém o intervalo de preços de referência de uma cultura agrícola (preco_min, preco_max, tipo [produtor/retalho], unidade, local, data, fonte). | "
+            "FR: Obtient la fourchette de prix de référence d'une culture agricole (preco_min, preco_max, type [produtor/retalho], unité, lieu, date, source). | "
+            "EN: Gets the reference price range for an agricultural crop (preco_min, preco_max, type [produtor/retalho], unit, location, date, source)."
         ),
         "parameters": {
             "type": "object",
@@ -192,6 +171,10 @@ TOOLS: List[Dict[str, Any]] = [
                     "type": "string",
                     "description": "Scheduled time (e.g., '06:00', '18:30').",
                 },
+                "duracao_minutos": {
+                    "type": "integer",
+                    "description": "Duration in minutes (1 to 600). Defaults to standard duration if omitted.",
+                },
             },
             "required": ["parcela", "hora"],
             "additionalProperties": False,
@@ -236,39 +219,70 @@ def detect_language(text: str) -> str:
     return "pt"
 
 
+def _sanitize_log_data(data: Any) -> Any:
+    """Recursively scrub personal data, tokens, passwords, and emails from log payloads."""
+    if isinstance(data, dict):
+        sanitized = {}
+        for k, v in data.items():
+            key_lower = str(k).lower()
+            if any(term in key_lower for term in ("senha", "password", "token", "email", "secret", "auth", "key")):
+                sanitized[k] = "[REDACTED]"
+            else:
+                sanitized[k] = _sanitize_log_data(v)
+        return sanitized
+    if isinstance(data, list):
+        return [_sanitize_log_data(item) for item in data]
+    return data
+
+
 def log_action(tool_name: str, args: Dict[str, Any], status: str, details: Dict[str, Any]) -> None:
-    """Append an action record to LOG_FILE_PATH in JSON Lines format."""
+    """Append a sanitized action record to LOG_FILE_PATH in JSON Lines format."""
     LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).isoformat()
     log_entry = {
         "timestamp": timestamp,
         "tool": tool_name,
-        "arguments": args,
+        "arguments": _sanitize_log_data(args),
         "status": status,
-        "details": details,
+        "details": _sanitize_log_data(details),
     }
     with open(LOG_FILE_PATH, "a", encoding="utf-8") as log_file:
         log_file.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
 
 def get_crop_price(cultura: str) -> Dict[str, Any]:
-    """Return fictional crop price in Kz/kg from SQLite or fallback dict and log the lookup."""
+    """Return real crop reference price interval from SQLite and log the lookup."""
     init_db()
     db_row = get_crop_price_from_db(cultura)
-    if db_row is not None:
-        price_kz = int(db_row["preco_kz_kg"])
-        note = str(db_row["observacao"])
-    else:
-        normalized = cultura.strip().lower()
-        price_kz = FICTIONAL_CROP_PRICES_KZ.get(normalized, DEFAULT_CROP_PRICE_KZ)
-        note = "DADOS FICTÍCIOS DE DEMONSTRAÇÃO (Hackathon) | Données fictives | Fictional demo data"
+    if db_row is None:
+        result = {
+            "status": "not_found",
+            "cultura": cultura,
+            "mensagem": f"Não foram encontrados preços de referência para a cultura '{cultura}' na base de dados oficial.",
+        }
+        log_action("obter_preco", {"cultura": cultura}, "NOT_FOUND", result)
+        return result
+
+    p_min = float(db_row.get("preco_min") or db_row.get("preco_kz_kg") or 0.0)
+    p_max = float(db_row.get("preco_max") or db_row.get("preco_kz_kg") or 0.0)
+    tipo = str(db_row.get("tipo") or "retalho")
+    unidade = str(db_row.get("unidade") or "kz/kg")
+    local = str(db_row.get("local") or "")
+    data = str(db_row.get("data") or "")
+    fonte = str(db_row.get("fonte") or "")
+    nota = f"referência de demonstração, {local}, {data}"
 
     result = {
         "status": "executed",
         "cultura": cultura,
-        "preco_kz_kg": price_kz,
-        "moeda": "Kz/kg",
-        "nota": note,
+        "preco_min": p_min,
+        "preco_max": p_max,
+        "tipo": tipo,
+        "unidade": unidade,
+        "local": local,
+        "data": data,
+        "fonte": fonte,
+        "nota": nota,
     }
     log_action("obter_preco", {"cultura": cultura}, "EXECUTED", result)
     return result
@@ -449,10 +463,16 @@ def build_action_description(
     if tool_name == "agendar_rega":
         parcela = arguments.get("parcela", "")
         hora = arguments.get("hora", "")
+        duracao = arguments.get("duracao_minutos")
+        if not duracao:
+            try:
+                duracao = int(os.environ.get("DURACAO_REGA_PADRAO", "30"))
+            except (ValueError, TypeError):
+                duracao = 30
         descriptions = {
-            "pt": f"Agendar rega na parcela '{parcela}' às {hora} (dados de demonstração).",
-            "fr": f"Planifier l'irrigation sur la parcelle '{parcela}' à {hora} (données de démonstration).",
-            "en": f"Schedule irrigation on plot '{parcela}' at {hora} (demonstration data).",
+            "pt": f"Agendar rega na parcela '{parcela}' às {hora} (Duração: {duracao} min).",
+            "fr": f"Planifier l'irrigation sur la parcelle '{parcela}' à {hora} (Durée : {duracao} min).",
+            "en": f"Schedule irrigation on plot '{parcela}' at {hora} (Duration: {duracao} min).",
         }
         return descriptions.get(lang, descriptions["pt"])
 
@@ -514,8 +534,32 @@ def execute_tool_call(
 
     if tool_name == "criar_anuncio":
         cultura = str(arguments.get("cultura", ""))
-        quantidade_kg = float(arguments.get("quantidade_kg", 0))
-        preco_kz_kg = float(arguments.get("preco_kz_kg", 0))
+        try:
+            quantidade_kg = float(arguments.get("quantidade_kg", 0))
+        except (ValueError, TypeError):
+            quantidade_kg = 0.0
+        try:
+            preco_kz_kg = float(arguments.get("preco_kz_kg", 0))
+        except (ValueError, TypeError):
+            preco_kz_kg = 0.0
+
+        ok_anuncio, msg_anuncio = validar_anuncio(cultura, quantidade_kg, preco_kz_kg)
+        if not ok_anuncio:
+            refusal_result = {
+                "status": "recusado_pelas_guardas",
+                "ferramenta": "criar_anuncio",
+                "motivo": msg_anuncio,
+            }
+            action_record = {
+                "ferramenta": "criar_anuncio",
+                "argumentos": arguments,
+                "requer_confirmacao": False,
+                "estado": "recusada_pelas_guardas",
+                "resultado": refusal_result,
+            }
+            log_action("criar_anuncio", arguments, "REJECTED_BY_GUARDS", refusal_result)
+            return refusal_result, action_record
+
         total_kz = round(quantidade_kg * preco_kz_kg, 2)
 
         if interactive:
@@ -561,6 +605,23 @@ def execute_tool_call(
     if tool_name == "agendar_rega":
         parcela = str(arguments.get("parcela", ""))
         hora = str(arguments.get("hora", ""))
+
+        ok_rega, msg_rega = validar_rega(parcela, hora)
+        if not ok_rega:
+            refusal_result = {
+                "status": "recusado_pelas_guardas",
+                "ferramenta": "agendar_rega",
+                "motivo": msg_rega,
+            }
+            action_record = {
+                "ferramenta": "agendar_rega",
+                "argumentos": arguments,
+                "requer_confirmacao": False,
+                "estado": "recusada_pelas_guardas",
+                "resultado": refusal_result,
+            }
+            log_action("agendar_rega", arguments, "REJECTED_BY_GUARDS", refusal_result)
+            return refusal_result, action_record
 
         if interactive:
             prompt_msg = strings["confirm_irrigation"].format(parcela=parcela, hora=hora)
@@ -636,6 +697,10 @@ def run_agent_loop(
 
         if not function_calls:
             final_text = response.output_text or ""
+            numeros_autorizados = extrair_numeros_autorizados(recorded_actions, [user_message])
+            ok_num, _ = verificar_numeros_resposta(final_text, numeros_autorizados)
+            if not ok_num:
+                final_text = gerar_resposta_segura_sem_alucinacoes(final_text, lang=detected_lang)
             return {
                 "resposta": final_text,
                 "idioma": detected_lang,
@@ -667,6 +732,11 @@ def run_agent_loop(
             )
 
         final_text = response.output_text or ""
+
+    numeros_autorizados = extrair_numeros_autorizados(recorded_actions, [user_message])
+    ok_num, _ = verificar_numeros_resposta(final_text, numeros_autorizados)
+    if not ok_num:
+        final_text = gerar_resposta_segura_sem_alucinacoes(final_text, lang=detected_lang)
 
     return {
         "resposta": final_text,

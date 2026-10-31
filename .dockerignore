@@ -1,0 +1,45 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.cert
+
+# Version control
+.git
+.gitignore
+.github
+
+# Python
+.venv
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data & local runtime artifacts
+data/
+uploads/
+amostras/
+*.db
+*.sqlite*
+*.log
+
+# Node & Next.js
+node_modules/
+.next/
+out/
+build/
+.npm/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

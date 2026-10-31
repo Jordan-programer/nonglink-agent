@@ -77,7 +77,12 @@ async function request(path, options = {}) {
     let errorDetail = "";
     try {
       const data = await response.json();
-      errorDetail = data?.detail || data?.erro || data?.message || "";
+      const rawDetail = data?.detail || data?.erro || data?.message || "";
+      if (typeof rawDetail === "object" && rawDetail !== null) {
+        errorDetail = rawDetail.pt || rawDetail.message || rawDetail.fr || rawDetail.en || "";
+      } else {
+        errorDetail = String(rawDetail || "");
+      }
     } catch {
       // ignore JSON parse error on error response
     }

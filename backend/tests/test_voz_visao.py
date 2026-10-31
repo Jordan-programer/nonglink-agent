@@ -14,10 +14,16 @@ BACKEND_ROOT = Path(__file__).resolve().parent.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+import os
+import pytest
+
 from app.agent import analisar_foto  # noqa: E402
 from app.config import DEFAULT_OUTPUT_BOXES_PATH, SAMPLES_DIR  # noqa: E402
 from app.visao import segmentar  # noqa: E402
 from app.voz import transcrever  # noqa: E402
+
+if not os.environ.get("MODEL_API_KEY") or os.environ.get("MODEL_API_KEY") in ("coloque_a_sua_chave_aqui", "teste", ""):
+    pytest.skip("Requer chave real MODEL_API_KEY no ambiente", allow_module_level=True)
 
 SAMPLE_AUDIO = SAMPLES_DIR / "voz_pt.wav"
 SAMPLE_IMAGE = SAMPLES_DIR / "tomates.jpg"

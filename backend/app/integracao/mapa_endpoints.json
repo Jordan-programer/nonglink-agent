@@ -1,0 +1,201 @@
+{
+  "prefixo_api": "/api/v1",
+  "descricao": "Mapeamento dos endpoints REST do backend NongLink consumidos pela camada de integração do agente.",
+  "endpoints": {
+    "auth_login": {
+      "metodo": "POST",
+      "caminho": "/auth/login",
+      "autenticacao": "nenhuma",
+      "origem": "existente",
+      "descricao": "Autentica utilizador por email ou telefone e devolve access_token JWT e perfil do utilizador.",
+      "request_body": {
+        "identifier": "string (email ou telefone)",
+        "password": "string"
+      },
+      "response": {
+        "access_token": "string",
+        "token_type": "bearer",
+        "user": {
+          "id": "integer",
+          "name": "string",
+          "email": "string",
+          "role": "string",
+          "region_id": "integer | null"
+        }
+      },
+      "expiracao_minutos": 60,
+      "refresh_token": false
+    },
+    "auth_me": {
+      "metodo": "GET",
+      "caminho": "/auth/me",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Devolve o perfil do utilizador autenticado, incluindo region_id.",
+      "response": {
+        "id": "integer",
+        "name": "string",
+        "email": "string",
+        "role": "string",
+        "region_id": "integer | null"
+      }
+    },
+    "crops_list": {
+      "metodo": "GET",
+      "caminho": "/crops/",
+      "autenticacao": "nenhuma (publico)",
+      "origem": "existente",
+      "descricao": "Lista todas as culturas agrícolas catalogadas no sistema.",
+      "response": [
+        {
+          "id": "integer",
+          "name": "string",
+          "category": "string",
+          "default_unit": "string"
+        }
+      ]
+    },
+    "market_price_suggestions": {
+      "metodo": "POST",
+      "caminho": "/market/price-suggestions",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Obtém sugestão e intervalo de preços para uma cultura e região com base em modelos preditivos.",
+      "request_body": {
+        "crop_id": "integer",
+        "region_id": "integer",
+        "quality": "string (opcional)"
+      },
+      "response": {
+        "suggested_price": "float",
+        "min_price": "float",
+        "max_price": "float",
+        "confidence": "float",
+        "reasoning": "string"
+      }
+    },
+    "market_prices": {
+      "metodo": "GET",
+      "caminho": "/market/prices",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Consulta preços históricos ou correntes por cultura e região.",
+      "query_params": {
+        "crop_id": "integer",
+        "region_id": "integer"
+      }
+    },
+    "farms_mine": {
+      "metodo": "GET",
+      "caminho": "/farms/mine",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Lista as parcelas / fazendas pertencentes ao agricultor autenticado.",
+      "response": [
+        {
+          "id": "integer",
+          "name": "string",
+          "location": "string | null",
+          "latitude": "float | null",
+          "longitude": "float | null",
+          "size_hectares": "float | null",
+          "region_id": "integer | null"
+        }
+      ]
+    },
+    "farms_create": {
+      "metodo": "POST",
+      "caminho": "/farms/",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Cria uma nova parcela / fazenda para o agricultor autenticado."
+    },
+    "products_create": {
+      "metodo": "POST",
+      "caminho": "/products/",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Publica um anúncio de produto agrícola no marketplace.",
+      "request_body": {
+        "farm_id": "integer",
+        "crop_id": "integer",
+        "name": "string",
+        "price_per_unit": "float",
+        "quantity_available": "float",
+        "unit": "string",
+        "image_url": "string (opcional)",
+        "quality": "string (opcional)",
+        "certification": "string (opcional)",
+        "price_suggestion_id": "integer (opcional)"
+      }
+    },
+    "products_mine": {
+      "metodo": "GET",
+      "caminho": "/products/mine",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Lista os produtos agrícolas listados pelo agricultor autenticado."
+    },
+    "products_upload_image": {
+      "metodo": "POST",
+      "caminho": "/products/upload-image",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Envia uma imagem em multipart/form-data e devolve o URL público correspondente.",
+      "request_form": {
+        "file": "UploadFile (imagem binaria)"
+      },
+      "response": {
+        "image_url": "string"
+      }
+    },
+    "irrigations_create": {
+      "metodo": "POST",
+      "caminho": "/farms/{farm_id}/irrigations",
+      "autenticacao": "Bearer",
+      "origem": "hackathon (Fase 2A)",
+      "descricao": "Agenda uma rega para a parcela informada (status 201; 409 em caso de sobreposição).",
+      "path_params": {
+        "farm_id": "integer"
+      },
+      "request_body": {
+        "scheduled_time": "string (datetime ISO UTC)",
+        "duration_minutes": "integer (1 a 600)",
+        "notes": "string (opcional, ate 255 chars)",
+        "criada_via": "string (opcional, ex: 'agente')"
+      },
+      "response": {
+        "id": "integer",
+        "farm_id": "integer",
+        "scheduled_time": "string",
+        "duration_minutes": "integer",
+        "notes": "string | null",
+        "status": "agendada",
+        "criada_via": "string | null",
+        "created_at": "string"
+      }
+    },
+    "irrigations_mine": {
+      "metodo": "GET",
+      "caminho": "/irrigations/mine",
+      "autenticacao": "Bearer",
+      "origem": "hackathon (Fase 2A)",
+      "descricao": "Lista as regas do agricultor autenticado ordenadas por scheduled_time.",
+      "query_params": {
+        "status": "string (opcional: 'agendada' | 'concluida' | 'cancelada')",
+        "from": "string datetime (opcional)",
+        "to": "string datetime (opcional)"
+      }
+    },
+    "irrigations_cancel": {
+      "metodo": "PATCH",
+      "caminho": "/irrigations/{id}/cancel",
+      "autenticacao": "Bearer",
+      "origem": "hackathon (Fase 2A)",
+      "descricao": "Cancela uma rega previamente agendada.",
+      "path_params": {
+        "id": "integer"
+      }
+    }
+  }
+}

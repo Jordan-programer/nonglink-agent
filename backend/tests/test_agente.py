@@ -22,6 +22,12 @@ from app.main import (  # noqa: E402
     post_confirm,
 )
 from scripts.seed import seed_database  # noqa: E402
+import pytest
+
+MOCK_TEST_USER: dict = {"id": "test_suite_user", "nome": "Test User", "tipo": "registado"}
+
+if not os.environ.get("MODEL_API_KEY") or os.environ.get("MODEL_API_KEY") in ("coloque_a_sua_chave_aqui", "teste", ""):
+    pytest.skip("Requer chave real MODEL_API_KEY no ambiente", allow_module_level=True)
 
 
 def test_case_1_tomato_price() -> Tuple[bool, str]:
@@ -30,7 +36,7 @@ def test_case_1_tomato_price() -> Tuple[bool, str]:
         sessao="test-case-1",
         mensagem="Qual é o preço do tomate por quilo?",
     )
-    resp = post_agent(req)
+    resp = post_agent(req, user=MOCK_TEST_USER)
     if resp.get("estado") != "concluido":
         return False, f"Estado inesperado: {resp.get('estado')}"
 
@@ -55,7 +61,8 @@ def test_case_2_publish_listing_confirmed() -> Tuple[bool, str]:
         AgentMessageRequest(
             sessao="test-case-2",
             mensagem="Quero publicar um anúncio de 120 kg de tomate a 850 Kz/kg.",
-        )
+        ),
+        user=MOCK_TEST_USER,
     )
     if step1.get("estado") != "pendente":
         return False, f"Esperava estado 'pendente', recebeu '{step1.get('estado')}'."
@@ -68,7 +75,7 @@ def test_case_2_publish_listing_confirmed() -> Tuple[bool, str]:
     if after_step1_ids != before_ids:
         return False, "O anúncio foi gravado antes da confirmação!"
 
-    step2 = post_confirm(ConfirmActionRequest(sessao="test-case-2", confirmar=True))
+    step2 = post_confirm(ConfirmActionRequest(sessao="test-case-2", confirmar=True), user=MOCK_TEST_USER)
     if step2.get("estado") != "confirmado":
         return False, f"Esperava estado 'confirmado', recebeu '{step2.get('estado')}'."
 
@@ -88,7 +95,8 @@ def test_case_3_cancel_action() -> Tuple[bool, str]:
         AgentMessageRequest(
             sessao="test-case-3",
             mensagem="Por favor agenda rega na Parcela Teste às 07:15.",
-        )
+        ),
+        user=MOCK_TEST_USER,
     )
     if step1.get("estado") != "pendente":
         return False, f"Esperava estado 'pendente', recebeu '{step1.get('estado')}'."
@@ -97,7 +105,7 @@ def test_case_3_cancel_action() -> Tuple[bool, str]:
     if tool_name not in ("agendar_rega", "criar_anuncio"):
         return False, f"Ferramenta pendente inesperada: '{tool_name}'."
 
-    step2 = post_confirm(ConfirmActionRequest(sessao="test-case-3", confirmar=False))
+    step2 = post_confirm(ConfirmActionRequest(sessao="test-case-3", confirmar=False), user=MOCK_TEST_USER)
     if step2.get("estado") != "cancelado":
         return False, f"Esperava estado 'cancelado', recebeu '{step2.get('estado')}'."
 

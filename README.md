@@ -98,9 +98,48 @@ cd ~\nonglink-agent\backend
 
 # 6. Gestão de conta, perfil, senhas e eliminação de dados (OK / FALHOU)
 ..\.venv\Scripts\python.exe tests\test_conta.py
+
+# 7. Integração com a API REST do NongLink (MockTransport sem rede real)
+..\.venv\Scripts\python.exe -m pytest tests\test_integracao_api.py -v
 ```
 
-Os testes 4, 5 e 6 usam uma base de dados temporária `backend/nonglink_test.db`, que é apagada no fim, e não precisam da `MODEL_API_KEY`.
+Os testes 4, 5 e 6 usam uma base de dados temporária `backend/nonglink_test.db`, que é apagada no fim, e não precisam da `MODEL_API_KEY`. O teste 7 valida exaustivamente os 16 cenários de integração da API REST sem necessidade de rede real.
+
+---
+
+## 🔌 Integração com o NongLink
+
+O agente de campo suporta dois modos operacionais configuráveis via `.env`:
+1. **Modo `sandbox` (por omissão):** Base de dados SQLite local, preços de referência de demonstração e agendamentos locais.
+2. **Modo `api`:** Integração directa com a API REST do NongLink (prefixo `/api/v1`), activada quando `MODO_PLATAFORMA=api` e `NONGLINK_API_URL` está configurada (ex: `NONGLINK_API_URL=http://localhost:8000/api/v1`).
+
+### Mapeamento e Distinção de Endpoints
+
+A especificação completa está documentada em [`backend/app/integracao/mapa_endpoints.json`](file:///c:/Users/jorda/nonglink-agent/backend/app/integracao/mapa_endpoints.json).
+
+| Endpoint | Método | Origem | Descrição e Comportamento do Agente |
+| :--- | :---: | :---: | :--- |
+| `/api/v1/auth/login` | `POST` | **Existente** | Login reencaminhado para o NongLink, devolvendo token JWT oficial (expiração em 60 min, sem refresh). |
+| `/api/v1/auth/me` | `GET` | **Existente** | Validação do Bearer token com cache de 60 s em memória. O ID do utilizador NongLink é associado às conversas (`utilizador_externo_id`). |
+| `/api/v1/crops/` | `GET` | **Existente** | Catálogo público de culturas. Cache em memória de 5 minutos com resolução insensível a acentos (`feijao` -> `Feijão`). |
+| `/api/v1/market/price-suggestions` | `POST` | **Existente** | Consulta de preços com `crop_id` e `region_id`. Apresenta intervalo (`min_price` a `max_price`), confiança e justificação com aviso de que é indicativo. |
+| `/api/v1/market/prices` | `GET` | **Existente** | Consulta auxiliar de cotações históricas por cultura e região. |
+| `/api/v1/farms/mine` | `GET` | **Existente** | Resolução de parcelas: se o agricultor tiver 1 parcela, usa-a; se tiver várias, pergunta qual; se não tiver nenhuma, explica a necessidade de criá-la e não cria nada sozinho. |
+| `/api/v1/farms/` | `POST` | **Existente** | Registo de novas parcelas agrícolas na plataforma. |
+| `/api/v1/products/` | `POST` | **Existente** | Publicação de anúncios de venda após confirmação explícita no talão. |
+| `/api/v1/products/mine` | `GET` | **Existente** | Consulta de anúncios do agricultor e reconciliação automática pós-timeout. |
+| `/api/v1/products/upload-image` | `POST` | **Existente** | Upload opcional de fotografia da colheita quando `ANEXAR_FOTO=1`. |
+| `/api/v1/farms/{farm_id}/irrigations` | `POST` | **Criado no Hackathon** | Agendamento de rega com `scheduled_time` em UTC (convertido de `Africa/Luanda`), `duration_minutes` (1 a 600, por omissão 30 min via `DURACAO_REGA_PADRAO`), `criada_via="agente"`. Em caso de erro 409 (sobreposição), o agente explica o conflito e sugere outro horário sem repetir o pedido. |
+| `/api/v1/irrigations/mine` | `GET` | **Criado no Hackathon** | Listagem de regas do agricultor e reconciliação pós-timeout. |
+| `/api/v1/irrigations/{id}/cancel` | `PATCH` | **Criado no Hackathon** | Cancelamento de regas previamente agendadas. |
+
+### Resiliência, Duplicados e Idempotência
+
+1. **Retentativas Seguras (`_request_with_retry`):** Timeout estrito de 10 segundos com até 2 repetições adicionadas apenas em falhas transitórias de rede e erros HTTP 502, 503 e 504. Chamadas com erro 500 ou 4xx não são repetidas.
+2. **Prevenção de Duplicados e Reconciliação:** Como o backend REST não suporta o cabeçalho `Idempotency-Key`, o agente regista a intenção como "em curso" antes de efectuar `POST /products/` ou `POST /farms/{farm_id}/irrigations`. Em caso de timeout ou falha de rede, **nunca repete o pedido às cegas**; em vez disso, consulta imediatamente `GET /products/mine` ou `GET /irrigations/mine` para verificar se o recurso foi inserido no servidor, reconciliando o estado com segurança.
+3. **Conversão de Fuso Horário:** Os horários introduzidos pelo utilizador são interpretados no fuso horário de Angola (`Africa/Luanda`, WAT, UTC+1) e convertidos em formato ISO 8601 UTC antes do envio.
+4. **Protecção de Segredos:** Palavras-passe e tokens nunca são persistidos em ficheiros de log nem registados em texto simples. Em modo `api`, o registo local autónomo e o modo convidado ficam desativados para preservar a integridade das identidades corporativas.
+
 
 ---
 

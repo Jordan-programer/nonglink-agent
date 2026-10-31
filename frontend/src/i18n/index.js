@@ -173,6 +173,12 @@ export const translations = {
     deleteAccountConfirmPrompt: "Para confirmar, introduza a sua palavra-passe:",
     deleteAccountGuestPrompt: "Para confirmar, escreva APAGAR abaixo:",
     btnConfirmDeleteAccount: "Eliminar definitivamente",
+
+    demoNotice:
+      "Demonstração. Não escreva dados pessoais. Os dados de convidados são apagados após 24 horas.",
+    error429: "Atingiu o limite diário da demonstração. Tente amanhã.",
+    error503:
+      "O assistente está temporariamente em manutenção para gestão de créditos da demonstração. Volte em breve.",
   },
   fr: {
     brand: "NongLink",
@@ -348,6 +354,13 @@ export const translations = {
     deleteAccountConfirmPrompt: "Pour confirmer, saisissez votre mot de passe :",
     deleteAccountGuestPrompt: "Pour confirmer, écrivez APAGAR ci-dessous :",
     btnConfirmDeleteAccount: "Supprimer définitivement",
+
+    demoNotice:
+      "Démonstration. Ne saisissez pas de données personnelles. Les données des invités sont supprimées après 24 heures.",
+    error429:
+      "Vous avez atteint la limite quotidienne de démonstration. Réessayez demain.",
+    error503:
+      "L'assistant est temporairement en maintenance pour la gestion des crédits de démonstration. Revenez bientôt.",
   },
   en: {
     brand: "NongLink",
@@ -523,6 +536,12 @@ export const translations = {
     deleteAccountConfirmPrompt: "To confirm, enter your password:",
     deleteAccountGuestPrompt: "To confirm, type APAGAR below:",
     btnConfirmDeleteAccount: "Permanently delete account",
+
+    demoNotice:
+      "Demo. Do not enter personal data. Guest data is deleted after 24 hours.",
+    error429: "You have reached the daily demo limit. Please try tomorrow.",
+    error503:
+      "The assistant is temporarily under maintenance for demo credit management. Please check back soon.",
   },
 };
 
