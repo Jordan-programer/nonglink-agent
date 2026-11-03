@@ -43,22 +43,44 @@ DEFAULT_CROP_PRICE_KZ = 0
 
 SYSTEM_INSTRUCTIONS = """You are the NongLink Field Agent (Agente de Campo NongLink / Agent de Terrain NongLink), an agricultural assistant for smallholder farmers in Angola, DRC, and the Republic of the Congo.
 
+Operational Scope:
+- Market prices & reference ranges (`obter_preco`)
+- Crop sale listings (`criar_anuncio`, `actualizar_anuncio`, `retirar_anuncio`)
+- Irrigation management (`agendar_rega`, `cancelar_rega`)
+- Farm plots & satellite soil study (`listar_parcelas`, `estudo_campo`)
+- Sales tracking & financial summaries (`listar_vendas`, `resumo_vendas`, `tendencias_vendas`)
+- Farm photo object segmentation (`analisar_foto`)
+
 Strict Mandatory Rules:
 1. Language: ALWAYS reply in the exact same language used by the user: Portuguese (PT), French (FR), or English (EN). Default to Portuguese if unsure.
 2. No Hallucinated Numbers & Reference Price Ranges:
    - NEVER invent prices, statistics, or yields.
    - When stating crop prices obtained from `obter_preco`, ALWAYS state the full interval (`[preco_min] a [preco_max] [unidade]`), specify the type (`tipo`: produtor or retalho), and ALWAYS state: 'referência de demonstração, [local], [data]' (or localized in FR/EN).
    - NEVER provide a single number as if it were the exact 'price of the day' or market fixed price.
-3. Ask When Information Is Missing: If any required piece of information is missing to perform an action — such as crop (`cultura`), quantity in kg (`quantidade_kg`), plot (`parcela`), or time (`hora`) — DO NOT assume, guess, or invent default values. Ask the user clearly for the missing data instead of calling the tool.
+   - If the user profile lacks a registered region (sem region_id), state that you cannot suggest regional prices and ask for their province/region.
+3. Disambiguation & Missing Information:
+   - Identify farm plots and products by name. If multiple matching plots or products exist, ask the user to clarify which one they mean.
+   - If any required piece of information is missing to perform an action — such as crop (`cultura`), quantity in kg (`quantidade_kg`), plot (`parcela`), product (`produto`), or time (`hora`) — DO NOT assume, guess, or invent default values. Ask the user clearly for the missing data instead of calling the tool.
 4. Photo Analysis (`analisar_foto`) & Weight Estimation Rule:
    - When a photo (`foto_id`) is provided or mentioned, call `analisar_foto(foto_id, objecto)` to count and segment the crop using `sam-3.1`.
    - NEVER claim crop quality, freshness, ripeness, disease, pests, or phytosanitary diagnosis from the photo. ONLY report what the segmentation objectively measured: instance count (`contagem`), bounding boxes (`caixas`), and mask coverage percentage (`cobertura_percentagem`).
    - If the photo analysis returns 0 items (contagem = 0) or lacks detections, NEVER propose `criar_anuncio` based on that photo; you MUST ask the user for a clearer/closer photo or to provide the harvest weight directly.
    - Do NOT convert the instance count into kilograms silently on your own: either ask the user for the average weight per unit (or crate) OR explicitly state that you are using a demonstration average weight estimate (e.g., 0.15 kg per tomato as a demonstration estimate) and show the full arithmetic calculation (`contagem × peso_medio_kg = quantidade_kg`) before proposing `criar_anuncio`.
-5. Price Lookup Before Listing & Suggesting Producer Prices:
-   - If the user explicitly specifies a price for their ad (e.g., 'a 2200 Kz/kg'), call `criar_anuncio` with that price (`preco_kz_kg=2200`) so that system guards can validate it against the allowed reference margin.
-   - If the user asks to publish an ad without specifying a price, call `obter_preco` first. Present the range and suggest a realistic price within the interval of type 'produtor' (or within the general interval if only 'retalho' is available), stating that it is a demonstration reference. DO NOT publish directly without user agreement on the price.
-6. Mandatory User Confirmation via Tool Call: `criar_anuncio` and `agendar_rega` never execute without user confirmation because the NongLink runtime automatically intercepts your tool call and asks the user to confirm ("s" in terminal or Confirm button in web UI / `/confirmar`). Always call `criar_anuncio` or `agendar_rega` to propose the action and never claim it was executed until the tool output confirms `"status": "executed"`.
+5. Satellite Soil Study (`estudo_campo`) & Recommendations:
+   - Only call `estudo_campo(parcela, forcar_nova_analise=True)` when the user explicitly requests a NEW satellite analysis. Otherwise, request standard reading (`forcar_nova_analise=False`).
+   - Only cite numbers that come strictly from the tool output (NDVI, NDMI, NDTI, salinidade, nebulosidade, datas).
+   - Present irrigation, planting, and soil treatment recommendations strictly as "recomendações do NongLink" and DO NOT invent or alter recommendations.
+   - ALWAYS remind the farmer that the satellite reading depends on the image acquisition date and cloud cover (`cloud_cover_pct`).
+   - NEVER make phytosanitary disease diagnoses or promise specific crop yields based on satellite readings.
+   - If the plot lacks a boundary polygon (HTTP 400), explain clearly that the plot boundary must be drawn on the map at agrilink.store; NEVER ask or receive polygons/coordinates via chat.
+6. Sales Tracking & Order Status:
+   - `listar_vendas`, `resumo_vendas`, and `tendencias_vendas` are strictly read-only.
+   - If the user asks to alter the status of a sales order (e.g. approve or mark completed), explain that changing order status is not available to the farmer.
+7. Listings Management & Retirar Anúncio:
+   - `actualizar_anuncio` allows updating unit price or available quantity.
+   - `retirar_anuncio` marks the listing as out of stock (quantity_available = 0) and NEVER permanently deletes the ad. Always specify in confirmation that "ficará esgotado, mas não será apagado".
+8. Mandatory User Confirmation via Tool Call:
+   - `criar_anuncio`, `actualizar_anuncio`, `retirar_anuncio`, `agendar_rega`, and `cancelar_rega` never execute without user confirmation because the NongLink runtime automatically intercepts your tool call and asks the user to confirm via confirmation ticket. Always call the tool to propose the action and never claim it was executed until the tool output confirms `"status": "executed"`.
 """
 
 UI_STRINGS: Dict[str, Dict[str, str]] = {
@@ -201,6 +223,154 @@ TOOLS: List[Dict[str, Any]] = [
                 },
             },
             "required": ["foto_id", "objecto"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "listar_parcelas",
+        "description": (
+            "PT: Lista as parcelas e lavras registadas do agricultor autenticado. | "
+            "FR: Liste les parcelles agricoles de l'agriculteur connecté. | "
+            "EN: Lists the registered farm plots of the authenticated farmer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "estudo_campo",
+        "description": (
+            "PT: Consulta ou solicita estudo de satélite do solo (índices NDVI, NDMI, NDTI, salinidade e recomendações técnicas do NongLink) para uma parcela. | "
+            "FR: Consulte ou demande l'étude satellite du sol (NDVI, NDMI, NDTI, salinité, recommandations NongLink) d'une parcelle. | "
+            "EN: Retrieves or requests satellite soil study (NDVI, NDMI, NDTI, salinity, NongLink recommendations) for a plot."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "parcela": {
+                    "type": "string",
+                    "description": "Nome ou identificador da parcela (ex: 'Parcela Norte', 'Lavra 1').",
+                },
+                "forcar_nova_analise": {
+                    "type": "boolean",
+                    "description": "True se o utilizador pediu explicitamente uma nova análise de satélite via Earth Engine (limite diário). False para ler a análise mais recente.",
+                },
+            },
+            "required": ["parcela"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "listar_vendas",
+        "description": (
+            "PT: Lista o histórico de vendas realizadas pelo agricultor (modo só de leitura). | "
+            "FR: Liste l'historique des ventes réalisées par l'agriculteur (lecture seule). | "
+            "EN: Lists sales order history of the farmer (read-only)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "resumo_vendas",
+        "description": (
+            "PT: Obtém o resumo financeiro das vendas (vendas brutas, comissão da plataforma, rendimento líquido). | "
+            "FR: Obtient le résumé financier des ventes (ventes brutes, commission, gains nets). | "
+            "EN: Retrieves sales earnings summary (gross sales, platform fee, net earnings)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "tendencias_vendas",
+        "description": (
+            "PT: Obtém a série temporal das vendas diárias do agricultor. | "
+            "FR: Obtient la série chronologique des ventes quotidiennes de l'agriculteur. | "
+            "EN: Retrieves daily sales trends series for the farmer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "actualizar_anuncio",
+        "description": (
+            "PT: Atualiza o preço unitário e/ou a quantidade disponível de um anúncio publicado. Requer confirmação. | "
+            "FR: Met à jour le prix unitaire et/ou la quantité d'une annonce publiée. Nécessite confirmation. | "
+            "EN: Updates unit price and/or available quantity of a published listing. Requires confirmation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "produto": {
+                    "type": "string",
+                    "description": "Nome do produto ou anúncio a atualizar (ex: 'Tomate', 'Mandioca').",
+                },
+                "preco_kz_kg": {
+                    "type": "number",
+                    "description": "Novo preço unitário em Kz/kg (opcional).",
+                },
+                "quantidade_kg": {
+                    "type": "number",
+                    "description": "Nova quantidade disponível em kg (opcional).",
+                },
+            },
+            "required": ["produto"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "retirar_anuncio",
+        "description": (
+            "PT: Retira um anúncio de venda marcando-o como esgotado (quantity_available=0). Nunca apaga o registo. Requer confirmação. | "
+            "FR: Retire une annonce de la vente en la marquant épuisée. Ne supprime jamais l'enregistrement. Requiert confirmation. | "
+            "EN: Withdraws a listing from sale by marking it out of stock. Never deletes the record. Requires confirmation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "produto": {
+                    "type": "string",
+                    "description": "Nome do produto ou anúncio a retirar de venda (ex: 'Tomate').",
+                },
+            },
+            "required": ["produto"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "cancelar_rega",
+        "description": (
+            "PT: Cancela uma sessão de rega agendada. Requer confirmação. | "
+            "FR: Annule une session d'irrigation planifiée. Requiert confirmation. | "
+            "EN: Cancels a scheduled irrigation session. Requires confirmation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "rega_id": {
+                    "type": "string",
+                    "description": "Identificador da rega a cancelar.",
+                },
+            },
+            "required": ["rega_id"],
             "additionalProperties": False,
         },
     },
@@ -473,6 +643,41 @@ def build_action_description(
             "pt": f"Agendar rega na parcela '{parcela}' às {hora} (Duração: {duracao} min).",
             "fr": f"Planifier l'irrigation sur la parcelle '{parcela}' à {hora} (Durée : {duracao} min).",
             "en": f"Schedule irrigation on plot '{parcela}' at {hora} (Duration: {duracao} min).",
+        }
+        return descriptions.get(lang, descriptions["pt"])
+
+    if tool_name == "actualizar_anuncio":
+        produto = arguments.get("produto", "")
+        preco = arguments.get("preco_kz_kg")
+        qtd = arguments.get("quantidade_kg")
+        detalhes = []
+        if preco is not None:
+            detalhes.append(f"Preço: {float(preco):g} Kz/kg")
+        if qtd is not None:
+            detalhes.append(f"Qtd: {float(qtd):g} kg")
+        detalhes_str = ", ".join(detalhes) or "novos valores"
+        descriptions = {
+            "pt": f"Actualizar anúncio de '{produto}' ({detalhes_str}).",
+            "fr": f"Mettre à jour l'annonce de '{produto}' ({detalhes_str}).",
+            "en": f"Update listing for '{produto}' ({detalhes_str}).",
+        }
+        return descriptions.get(lang, descriptions["pt"])
+
+    if tool_name == "retirar_anuncio":
+        produto = arguments.get("produto", "")
+        descriptions = {
+            "pt": f"Retirar anúncio de '{produto}' de venda (ficará esgotado, mas não será apagado).",
+            "fr": f"Retirer l'annonce de '{produto}' de la vente (sera marqué épuisé, mais non supprimé).",
+            "en": f"Withdraw listing for '{produto}' from sale (will be marked as sold out, but not deleted).",
+        }
+        return descriptions.get(lang, descriptions["pt"])
+
+    if tool_name == "cancelar_rega":
+        rega_id = arguments.get("rega_id", "")
+        descriptions = {
+            "pt": f"Cancelar a rega agendada #{rega_id}.",
+            "fr": f"Annuler l'irrigation planifiée #{rega_id}.",
+            "en": f"Cancel scheduled irrigation #{rega_id}.",
         }
         return descriptions.get(lang, descriptions["pt"])
 

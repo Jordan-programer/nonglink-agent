@@ -1,7 +1,27 @@
-const RAW_BASE_URL =
+const isProduction =
+  typeof process !== "undefined" && process.env.NODE_ENV === "production";
+
+let RAW_BASE_URL =
   (typeof process !== "undefined" &&
     (process.env.NEXT_PUBLIC_API_URL || process.env.VITE_API_URL)) ||
-  "http://127.0.0.1:8000";
+  "";
+
+if (isProduction) {
+  if (!RAW_BASE_URL || !RAW_BASE_URL.trim()) {
+    throw new Error("NEXT_PUBLIC_API_URL não pode estar vazio em produção.");
+  }
+  const isLocal =
+    RAW_BASE_URL.includes("localhost") ||
+    RAW_BASE_URL.includes("127.0.0.1") ||
+    RAW_BASE_URL.includes("0.0.0.0");
+  if (isLocal) {
+    throw new Error(
+      `NEXT_PUBLIC_API_URL não pode ter valor local em produção: ${RAW_BASE_URL}`
+    );
+  }
+} else if (!RAW_BASE_URL) {
+  RAW_BASE_URL = "http://127.0.0.1:8000";
+}
 
 export const API_BASE_URL = RAW_BASE_URL.replace(/\/+$/, "");
 
@@ -364,6 +384,10 @@ export async function listarRegas() {
     ? data.items
     : [];
   return list;
+}
+
+export async function obterConfiguracao() {
+  return request("/config", { method: "GET" });
 }
 
 export async function registarUtilizador(nome, email, senha) {

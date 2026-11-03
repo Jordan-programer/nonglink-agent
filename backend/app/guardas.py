@@ -276,66 +276,38 @@ def extrair_numeros_autorizados(
     quantidades: List[float] = []
     precos: List[float] = []
 
+    def _extrair_numeros_de_objeto(obj: Any) -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    val = float(v)
+                    autorizados.add(val)
+                    autorizados.add(round(val, 1))
+                    autorizados.add(round(val, 2))
+                    autorizados.add(round(val, 3))
+                    autorizados.add(round(val, 0))
+                    k_low = str(k).lower()
+                    if "quant" in k_low or "qtd" in k_low:
+                        quantidades.append(val)
+                    if any(term in k_low for term in ("prec", "price", "valor", "sales", "earnings", "fee", "total")):
+                        precos.append(val)
+                elif isinstance(v, (dict, list)):
+                    _extrair_numeros_de_objeto(v)
+                elif isinstance(v, str):
+                    for n in extrair_numeros_relevantes(v):
+                        autorizados.add(n)
+        elif isinstance(obj, list):
+            for item in obj:
+                _extrair_numeros_de_objeto(item)
+
     for action in executed_actions:
         res = action.get("resultado")
         args = action.get("argumentos", {})
 
         if isinstance(args, dict):
-            if "quantidade_kg" in args:
-                try:
-                    q = float(args["quantidade_kg"])
-                    quantidades.append(q)
-                    autorizados.add(q)
-                except (ValueError, TypeError):
-                    pass
-            if "preco_kz_kg" in args:
-                try:
-                    p = float(args["preco_kz_kg"])
-                    precos.append(p)
-                    autorizados.add(p)
-                except (ValueError, TypeError):
-                    pass
-
-        if isinstance(res, dict):
-            if "preco_min" in res:
-                try:
-                    p = float(res["preco_min"])
-                    precos.append(p)
-                    autorizados.add(p)
-                except (ValueError, TypeError):
-                    pass
-            if "preco_max" in res:
-                try:
-                    p = float(res["preco_max"])
-                    precos.append(p)
-                    autorizados.add(p)
-                except (ValueError, TypeError):
-                    pass
-            if "preco_kz_kg" in res:
-                try:
-                    p = float(res["preco_kz_kg"])
-                    precos.append(p)
-                    autorizados.add(p)
-                except (ValueError, TypeError):
-                    pass
-            if "contagem" in res:
-                try:
-                    c = float(res["contagem"])
-                    autorizados.add(c)
-                except (ValueError, TypeError):
-                    pass
-            if "cobertura_percentagem" in res:
-                try:
-                    cob = float(res["cobertura_percentagem"])
-                    autorizados.add(cob)
-                except (ValueError, TypeError):
-                    pass
-            if "valor_total_kz" in res:
-                try:
-                    tot = float(res["valor_total_kz"])
-                    autorizados.add(tot)
-                except (ValueError, TypeError):
-                    pass
+            _extrair_numeros_de_objeto(args)
+        if res is not None:
+            _extrair_numeros_de_objeto(res)
 
     # Adiciona produtos cruzados legítimos (quantidade * preco)
     for q in quantidades:

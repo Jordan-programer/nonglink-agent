@@ -15,8 +15,8 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Build argument for the public API URL (defaults to local backend, never contains secrets)
-ARG NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+# Build argument for the public API URL (production URL: https://agent.agrilink.store)
+ARG NEXT_PUBLIC_API_URL=https://agent.agrilink.store
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_TELEMETRY_DISABLED=1 \
     NODE_ENV=production

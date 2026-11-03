@@ -19,6 +19,7 @@ import {
   getApiAuthToken,
   setOnUnauthorized,
   obterUtilizadorAtual,
+  obterConfiguracao,
 } from "@/api";
 
 const AppContext = createContext(null);
@@ -78,6 +79,11 @@ export function AppProvider({ children }) {
   // User authentication state: starts unauthenticated (null) so no chat is possible without login
   const [user, setUser] = useState(null);
   const [authToken, setAuthToken] = useState(null);
+  const [appConfig, setAppConfig] = useState({
+    modo: "sandbox",
+    registo_url: "https://agrilink.store/registar",
+    aviso: "",
+  });
   const [authModalOpen, setAuthModalOpen] = useState(() => {
     if (typeof window !== "undefined" && window.sessionStorage) {
       try {
@@ -255,6 +261,28 @@ export function AppProvider({ children }) {
     return () => setOnUnauthorized(null);
   }, [handleUnauthorized]);
 
+  // Fetch backend public config (mode, registo_url, notices)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await obterConfiguracao();
+        if (!cancelled && cfg) {
+          setAppConfig({
+            modo: cfg.modo || "sandbox",
+            registo_url: cfg.registo_url || "https://agrilink.store/registar",
+            aviso: cfg.aviso || "",
+          });
+        }
+      } catch {
+        // fallback remains default
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Restore an existing tab session (token kept only in sessionStorage) and validate it with /auth/eu
   useEffect(() => {
     const savedToken = getApiAuthToken();
@@ -290,6 +318,38 @@ export function AppProvider({ children }) {
 
   const [definicoesOpen, setDefinicoesOpen] = useState(false);
 
+  // Confirmação de mídia (voz e foto) em memória — uma só vez por sessão
+  const [mediaConsentGiven, setMediaConsentGiven] = useState(false);
+  const [mediaConsentModalOpen, setMediaConsentModalOpen] = useState(false);
+  const pendingMediaActionRef = useRef(null);
+
+  const requestMediaConsent = useCallback(
+    (action) => {
+      if (mediaConsentGiven) {
+        action?.();
+        return;
+      }
+      pendingMediaActionRef.current = action;
+      setMediaConsentModalOpen(true);
+    },
+    [mediaConsentGiven]
+  );
+
+  const confirmMediaConsent = useCallback(() => {
+    setMediaConsentGiven(true);
+    setMediaConsentModalOpen(false);
+    if (typeof pendingMediaActionRef.current === "function") {
+      const act = pendingMediaActionRef.current;
+      pendingMediaActionRef.current = null;
+      act();
+    }
+  }, []);
+
+  const cancelMediaConsent = useCallback(() => {
+    setMediaConsentModalOpen(false);
+    pendingMediaActionRef.current = null;
+  }, []);
+
   return (
     <AppContext.Provider
       value={{
@@ -297,6 +357,7 @@ export function AppProvider({ children }) {
         setLang,
         theme,
         setTheme,
+        appConfig,
         definicoesOpen,
         setDefinicoesOpen,
         t,
@@ -329,6 +390,11 @@ export function AppProvider({ children }) {
         newChatTrigger,
         triggerNewChat,
         sessionStoreRef,
+        mediaConsentGiven,
+        mediaConsentModalOpen,
+        requestMediaConsent,
+        confirmMediaConsent,
+        cancelMediaConsent,
       }}
     >
       {children}

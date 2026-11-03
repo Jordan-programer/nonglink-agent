@@ -24,7 +24,10 @@ export default function DefinicoesDialog() {
     carregarConversas,
     triggerNewChat,
     handleUnauthorized,
+    appConfig,
   } = useApp();
+
+  const isApiMode = appConfig?.modo === "api" || (user && !user.is_demo && !!user.utilizador_externo_id);
 
   const [activeTab, setActiveTab] = useState("profile"); // profile | preferences | security | data
 
@@ -488,6 +491,23 @@ export default function DefinicoesDialog() {
                   <div className="rounded-item border border-border bg-sidebar p-4 text-xs text-text-secondary leading-relaxed">
                     {t.securityGuestNotice}
                   </div>
+                ) : isApiMode ? (
+                  <div className="rounded-item border border-border bg-sidebar p-4 space-y-3">
+                    <h3 className="text-sm font-semibold text-text">Gestão de Conta NongLink</h3>
+                    <p className="text-xs text-text-secondary leading-relaxed">
+                      A palavra-passe e a autenticação desta conta são geridas na plataforma oficial do NongLink.
+                    </p>
+                    <div>
+                      <a
+                        href="https://agrilink.store"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-item bg-accent px-4 py-2 text-xs font-semibold text-white hover:bg-accent-hover transition-ui"
+                      >
+                        Gerir a conta em agrilink.store ↗
+                      </a>
+                    </div>
+                  </div>
                 ) : (
                   <>
                     {/* Formulário Alterar Palavra-passe */}
@@ -632,43 +652,62 @@ export default function DefinicoesDialog() {
                   )}
                 </div>
 
-                {/* Zona de Perigo */}
-                <div className="rounded-card border border-danger/30 bg-danger/5 p-4 space-y-3">
-                  <h3 className="text-sm font-semibold text-danger">
-                    {t.dangerZone}
-                  </h3>
-                  <p className="text-xs text-text-secondary leading-relaxed">
-                    {t.dangerZoneDesc}
-                  </p>
+                {/* Zona de Perigo / Gestão NongLink */}
+                {isApiMode ? (
+                  <div className="rounded-card border border-border bg-sidebar p-4 space-y-3">
+                    <h3 className="text-sm font-semibold text-text">Encerramento de Conta</h3>
+                    <p className="text-xs text-text-secondary leading-relaxed">
+                      A sua conta de agricultor pertence ao sistema central do NongLink. Para alterar dados cadastrais ou solicitar a eliminação de conta, aceda à plataforma agrilink.store.
+                    </p>
+                    <div>
+                      <a
+                        href="https://agrilink.store"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-item border border-border bg-bg px-3.5 py-2 text-xs font-semibold text-text hover:bg-sidebar-hover transition-ui"
+                      >
+                        Gerir a conta em agrilink.store ↗
+                      </a>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-card border border-danger/30 bg-danger/5 p-4 space-y-3">
+                    <h3 className="text-sm font-semibold text-danger">
+                      {t.dangerZone}
+                    </h3>
+                    <p className="text-xs text-text-secondary leading-relaxed">
+                      {t.dangerZoneDesc}
+                    </p>
 
-                  <form onSubmit={handleDeleteAccount} className="space-y-3 pt-2">
-                    <label className="block text-xs font-medium text-text">
-                      {isGuest ? t.deleteAccountGuestPrompt : t.deleteAccountConfirmPrompt}
-                    </label>
-                    <input
-                      type={isGuest ? "text" : "password"}
-                      required
-                      placeholder={isGuest ? "APAGAR" : ""}
-                      value={deleteAccountInput}
-                      onChange={(e) => setDeleteAccountInput(e.target.value)}
-                      className="w-full rounded-item border border-danger/40 bg-bg px-3 py-2 text-sm text-text focus:border-danger focus:outline-none"
-                    />
+                    <form onSubmit={handleDeleteAccount} className="space-y-3 pt-2">
+                      <label className="block text-xs font-medium text-text">
+                        {isGuest ? t.deleteAccountGuestPrompt : t.deleteAccountConfirmPrompt}
+                      </label>
+                      <input
+                        type={isGuest ? "text" : "password"}
+                        required
+                        placeholder={isGuest ? "APAGAR" : ""}
+                        value={deleteAccountInput}
+                        onChange={(e) => setDeleteAccountInput(e.target.value)}
+                        className="w-full rounded-item border border-danger/40 bg-bg px-3 py-2 text-sm text-text focus:border-danger focus:outline-none"
+                      />
 
-                    {accountMsg && (
-                      <div className="rounded-item border border-danger/40 bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
-                        {accountMsg.text}
-                      </div>
-                    )}
+                      {accountMsg && (
+                        <div className="rounded-item border border-danger/40 bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
+                          {accountMsg.text}
+                        </div>
+                      )}
 
-                    <button
-                      type="submit"
-                      disabled={deletingAccount || !deleteAccountInput}
-                      className="rounded-item bg-danger px-4 py-2 text-xs font-semibold text-white hover:bg-danger/90 disabled:opacity-40 transition-ui"
-                    >
-                      {deletingAccount ? t.authSubmitting : t.btnConfirmDeleteAccount}
-                    </button>
-                  </form>
-                </div>
+                      <button
+                        type="submit"
+                        disabled={deletingAccount || !deleteAccountInput}
+                        className="rounded-item bg-danger px-4 py-2 text-xs font-semibold text-white hover:bg-danger/90 disabled:opacity-40 transition-ui"
+                      >
+                        {deletingAccount ? t.authSubmitting : t.btnConfirmDeleteAccount}
+                      </button>
+                    </form>
+                  </div>
+                )}
               </div>
             )}
           </div>

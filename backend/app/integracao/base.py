@@ -108,3 +108,79 @@ class Plataforma(ABC):
     ) -> Dict[str, Any]:
         """Resolve a parcela informada pelo utilizador ou seleciona parcela padrão."""
         pass
+
+    @abstractmethod
+    def listar_parcelas(
+        self,
+        token: str,
+    ) -> List[Dict[str, Any]]:
+        """Lista as parcelas / fazendas do agricultor autenticado."""
+        pass
+
+    @abstractmethod
+    def obter_estudo_campo(
+        self,
+        parcela_ref: Optional[str],
+        forcar_nova_analise: bool,
+        token: str,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Obtém estudo de solo/satélite (recomendações, índices) com cache 24h e limite diário."""
+        pass
+
+    @abstractmethod
+    def listar_vendas(
+        self,
+        token: str,
+    ) -> List[Dict[str, Any]]:
+        """Devolve as vendas realizadas pelo agricultor (modo só de leitura)."""
+        pass
+
+    @abstractmethod
+    def obter_resumo_vendas(
+        self,
+        token: str,
+    ) -> Dict[str, Any]:
+        """Devolve o resumo financeiro (vendas brutas, comissão, rendimento líquido)."""
+        pass
+
+    @abstractmethod
+    def obter_tendencias_vendas(
+        self,
+        token: str,
+    ) -> List[Dict[str, Any]]:
+        """Devolve a série temporal de vendas diárias do agricultor."""
+        pass
+
+    @abstractmethod
+    def resolver_produto(
+        self,
+        produto_ref: str,
+        token: str,
+    ) -> Dict[str, Any]:
+        """Resolve produto publicado do utilizador pelo nome."""
+        pass
+
+    @abstractmethod
+    def actualizar_anuncio(
+        self,
+        produto_ref: str,
+        preco_kz_kg: Optional[float],
+        quantidade_kg: Optional[float],
+        confirmed: bool,
+        token: str,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Atualiza preço e/ou quantidade de um produto via PATCH /products/{id}."""
+        pass
+
+    @abstractmethod
+    def retirar_anuncio(
+        self,
+        produto_ref: str,
+        confirmed: bool,
+        token: str,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Retira produto de venda definindo quantity_available=0 (nunca DELETE)."""
+        pass

@@ -970,6 +970,311 @@ def _continue_agent_turns(
                     "anexo_json": anexo_payload,
                 }
 
+            if call.name == "listar_parcelas":
+                plataforma = obter_plataforma()
+                token = user.get("token") if user else None
+                tool_output = plataforma.listar_parcelas(token=token or "")
+                executed_actions.append(
+                    {
+                        "ferramenta": "listar_parcelas",
+                        "argumentos": parsed_args,
+                        "estado": "executada",
+                        "resultado": tool_output,
+                    }
+                )
+                history.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": json.dumps(tool_output, ensure_ascii=False),
+                    }
+                )
+                continue
+
+            if call.name == "estudo_campo":
+                parcela = str(parsed_args.get("parcela", ""))
+                forcar = bool(parsed_args.get("forcar_nova_analise", False))
+                plataforma = obter_plataforma()
+                token = user.get("token") if user else None
+                tool_output = plataforma.obter_estudo_campo(
+                    parcela_ref=parcela,
+                    forcar_nova_analise=forcar,
+                    token=token or "",
+                    user=user,
+                )
+                executed_actions.append(
+                    {
+                        "ferramenta": "estudo_campo",
+                        "argumentos": parsed_args,
+                        "estado": "executada" if tool_output.get("status") in ("executed", "sem_analises", "sem_poligono", "quota_excedida") else "erro",
+                        "resultado": tool_output,
+                    }
+                )
+                history.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": json.dumps(tool_output, ensure_ascii=False),
+                    }
+                )
+                continue
+
+            if call.name == "listar_vendas":
+                plataforma = obter_plataforma()
+                token = user.get("token") if user else None
+                tool_output = plataforma.listar_vendas(token=token or "")
+                executed_actions.append(
+                    {
+                        "ferramenta": "listar_vendas",
+                        "argumentos": parsed_args,
+                        "estado": "executada",
+                        "resultado": tool_output,
+                    }
+                )
+                history.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": json.dumps(tool_output, ensure_ascii=False),
+                    }
+                )
+                continue
+
+            if call.name == "resumo_vendas":
+                plataforma = obter_plataforma()
+                token = user.get("token") if user else None
+                tool_output = plataforma.obter_resumo_vendas(token=token or "")
+                executed_actions.append(
+                    {
+                        "ferramenta": "resumo_vendas",
+                        "argumentos": parsed_args,
+                        "estado": "executada",
+                        "resultado": tool_output,
+                    }
+                )
+                history.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": json.dumps(tool_output, ensure_ascii=False),
+                    }
+                )
+                continue
+
+            if call.name == "tendencias_vendas":
+                plataforma = obter_plataforma()
+                token = user.get("token") if user else None
+                tool_output = plataforma.obter_tendencias_vendas(token=token or "")
+                executed_actions.append(
+                    {
+                        "ferramenta": "tendencias_vendas",
+                        "argumentos": parsed_args,
+                        "estado": "executada",
+                        "resultado": tool_output,
+                    }
+                )
+                history.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": json.dumps(tool_output, ensure_ascii=False),
+                    }
+                )
+                continue
+
+            if call.name == "actualizar_anuncio":
+                produto = str(parsed_args.get("produto", ""))
+                description = build_action_description(call.name, parsed_args, lang=lang)
+                action_payload: Dict[str, Any] = {
+                    "ferramenta": call.name,
+                    "tipo": "actualizar_anuncio",
+                    "argumentos": parsed_args,
+                    "descricao": description,
+                    **parsed_args,
+                }
+                log_action(
+                    call.name,
+                    parsed_args,
+                    "PENDING_WEB_CONFIRMATION",
+                    {"sessao": session_id, "descricao": description},
+                )
+                pending_msg = insert_message(
+                    conversa_id=session_id,
+                    papel="agente",
+                    texto=description,
+                    accao_json=action_payload,
+                    estado_accao="pendente",
+                    utilizador_id=utilizador_id,
+                )
+                PENDING_SESSIONS[session_id] = {
+                    "utilizador_id": utilizador_id,
+                    "user": user,
+                    "token": token,
+                    "history": history,
+                    "pending_message_id": pending_msg["id"],
+                    "pending_call": {
+                        "call_id": call.call_id,
+                        "ferramenta": call.name,
+                        "argumentos": parsed_args,
+                    },
+                    "remaining_calls": [
+                        {
+                            "call_id": rem.call_id,
+                            "ferramenta": rem.name,
+                            "argumentos": (
+                                json.loads(rem.arguments) if rem.arguments else {}
+                            ),
+                        }
+                        for rem in function_calls[idx + 1 :]
+                    ],
+                    "turn": turn,
+                    "lang": lang,
+                    "executed_actions": executed_actions,
+                    "descricao": description,
+                }
+                return {
+                    "estado": "pendente",
+                    "sessao": session_id,
+                    "conversa_id": session_id,
+                    "mensagem_id": pending_msg["id"],
+                    "accao": action_payload,
+                    "accao_json": action_payload,
+                    "estado_accao": "pendente",
+                    "descricao": description,
+                    "resposta": description,
+                    "idioma": lang,
+                    "accoes": executed_actions,
+                }
+
+            if call.name == "retirar_anuncio":
+                produto = str(parsed_args.get("produto", ""))
+                description = build_action_description(call.name, parsed_args, lang=lang)
+                action_payload: Dict[str, Any] = {
+                    "ferramenta": call.name,
+                    "tipo": "retirar_anuncio",
+                    "argumentos": parsed_args,
+                    "descricao": description,
+                    "aviso": "ficará esgotado, mas não será apagado",
+                    **parsed_args,
+                }
+                log_action(
+                    call.name,
+                    parsed_args,
+                    "PENDING_WEB_CONFIRMATION",
+                    {"sessao": session_id, "descricao": description},
+                )
+                pending_msg = insert_message(
+                    conversa_id=session_id,
+                    papel="agente",
+                    texto=description,
+                    accao_json=action_payload,
+                    estado_accao="pendente",
+                    utilizador_id=utilizador_id,
+                )
+                PENDING_SESSIONS[session_id] = {
+                    "utilizador_id": utilizador_id,
+                    "user": user,
+                    "token": token,
+                    "history": history,
+                    "pending_message_id": pending_msg["id"],
+                    "pending_call": {
+                        "call_id": call.call_id,
+                        "ferramenta": call.name,
+                        "argumentos": parsed_args,
+                    },
+                    "remaining_calls": [
+                        {
+                            "call_id": rem.call_id,
+                            "ferramenta": rem.name,
+                            "argumentos": (
+                                json.loads(rem.arguments) if rem.arguments else {}
+                            ),
+                        }
+                        for rem in function_calls[idx + 1 :]
+                    ],
+                    "turn": turn,
+                    "lang": lang,
+                    "executed_actions": executed_actions,
+                    "descricao": description,
+                }
+                return {
+                    "estado": "pendente",
+                    "sessao": session_id,
+                    "conversa_id": session_id,
+                    "mensagem_id": pending_msg["id"],
+                    "accao": action_payload,
+                    "accao_json": action_payload,
+                    "estado_accao": "pendente",
+                    "descricao": description,
+                    "resposta": description,
+                    "idioma": lang,
+                    "accoes": executed_actions,
+                }
+
+            if call.name == "cancelar_rega":
+                rega_id = str(parsed_args.get("rega_id", ""))
+                description = build_action_description(call.name, parsed_args, lang=lang)
+                action_payload: Dict[str, Any] = {
+                    "ferramenta": call.name,
+                    "tipo": "cancelar_rega",
+                    "argumentos": parsed_args,
+                    "descricao": description,
+                    **parsed_args,
+                }
+                log_action(
+                    call.name,
+                    parsed_args,
+                    "PENDING_WEB_CONFIRMATION",
+                    {"sessao": session_id, "descricao": description},
+                )
+                pending_msg = insert_message(
+                    conversa_id=session_id,
+                    papel="agente",
+                    texto=description,
+                    accao_json=action_payload,
+                    estado_accao="pendente",
+                    utilizador_id=utilizador_id,
+                )
+                PENDING_SESSIONS[session_id] = {
+                    "utilizador_id": utilizador_id,
+                    "user": user,
+                    "token": token,
+                    "history": history,
+                    "pending_message_id": pending_msg["id"],
+                    "pending_call": {
+                        "call_id": call.call_id,
+                        "ferramenta": call.name,
+                        "argumentos": parsed_args,
+                    },
+                    "remaining_calls": [
+                        {
+                            "call_id": rem.call_id,
+                            "ferramenta": rem.name,
+                            "argumentos": (
+                                json.loads(rem.arguments) if rem.arguments else {}
+                            ),
+                        }
+                        for rem in function_calls[idx + 1 :]
+                    ],
+                    "turn": turn,
+                    "lang": lang,
+                    "executed_actions": executed_actions,
+                    "descricao": description,
+                }
+                return {
+                    "estado": "pendente",
+                    "sessao": session_id,
+                    "conversa_id": session_id,
+                    "mensagem_id": pending_msg["id"],
+                    "accao": action_payload,
+                    "accao_json": action_payload,
+                    "estado_accao": "pendente",
+                    "descricao": description,
+                    "resposta": description,
+                    "idioma": lang,
+                    "accoes": executed_actions,
+                }
+
             unknown_output = {"status": "error", "message": f"Unknown tool: {call.name}"}
             history.append(
                 {
@@ -1058,6 +1363,39 @@ def _execute_or_cancel_pending_call(
                 token=token,
                 duracao_minutos=duracao,
             )
+        if tool_name == "actualizar_anuncio":
+            produto = str(arguments.get("produto", ""))
+            preco = arguments.get("preco_kz_kg")
+            qtd = arguments.get("quantidade_kg")
+            return plataforma.actualizar_anuncio(
+                produto_ref=produto,
+                preco_kz_kg=preco,
+                quantidade_kg=qtd,
+                confirmed=confirmed,
+                token=token or "",
+                user=user or {"id": utilizador_id},
+            )
+        if tool_name == "retirar_anuncio":
+            produto = str(arguments.get("produto", ""))
+            return plataforma.retirar_anuncio(
+                produto_ref=produto,
+                confirmed=confirmed,
+                token=token or "",
+                user=user or {"id": utilizador_id},
+            )
+        if tool_name == "cancelar_rega":
+            rega_id = str(arguments.get("rega_id", ""))
+            if not confirmed:
+                return {
+                    "status": "cancelled_by_user",
+                    "id": rega_id,
+                    "mensagem": f"Cancelamento da rega #{rega_id} cancelado pelo utilizador.",
+                }
+            return plataforma.cancelar_rega(
+                rega_id=rega_id,
+                user=user or {"id": utilizador_id},
+                token=token or "",
+            )
 
     status_label = "EXECUTED" if confirmed else "CANCELLED_BY_USER"
     if tool_name == "criar_anuncio":
@@ -1099,6 +1437,39 @@ def _execute_or_cancel_pending_call(
             confirmed=confirmed,
             status_label=status_label,
             utilizador_id=utilizador_id,
+        )
+    if tool_name == "actualizar_anuncio":
+        produto = str(arguments.get("produto", ""))
+        preco = arguments.get("preco_kz_kg")
+        qtd = arguments.get("quantidade_kg")
+        return plataforma.actualizar_anuncio(
+            produto_ref=produto,
+            preco_kz_kg=preco,
+            quantidade_kg=qtd,
+            confirmed=confirmed,
+            token=token or "",
+            user=user or {"id": utilizador_id},
+        )
+    if tool_name == "retirar_anuncio":
+        produto = str(arguments.get("produto", ""))
+        return plataforma.retirar_anuncio(
+            produto_ref=produto,
+            confirmed=confirmed,
+            token=token or "",
+            user=user or {"id": utilizador_id},
+        )
+    if tool_name == "cancelar_rega":
+        rega_id = str(arguments.get("rega_id", ""))
+        if not confirmed:
+            return {
+                "status": "cancelled_by_user",
+                "id": rega_id,
+                "mensagem": f"Cancelamento da rega #{rega_id} cancelado pelo utilizador.",
+            }
+        return plataforma.cancelar_rega(
+            rega_id=rega_id,
+            user=user or {"id": utilizador_id},
+            token=token or "",
         )
     return {"status": "error", "message": f"Unsupported tool: {tool_name}"}
 
@@ -1150,6 +1521,23 @@ def health_check() -> Dict[str, str]:
     return {"estado": "ok", "status": "ok"}
 
 
+@app.get("/config")
+def get_config() -> Dict[str, Any]:
+    """Public endpoint returning mode, registration URL and platform guidance."""
+    modo = os.environ.get("MODO_PLATAFORMA", "sandbox").strip().lower()
+    registo_url = os.environ.get("NONGLINK_REGISTER_URL", "https://agrilink.store/registar").strip()
+    aviso = (
+        "Em produção (modo api), utilize a sua conta do NongLink para aceder às suas parcelas e anúncios."
+        if modo == "api"
+        else "Modo de demonstração local (sandbox) ativo."
+    )
+    return {
+        "modo": modo,
+        "registo_url": registo_url,
+        "aviso": aviso,
+    }
+
+
 @app.post("/auth/registar")
 def post_auth_register(payload: RegisterUserRequest) -> Dict[str, Any]:
     """Register a new user account in SQLite and return an active session token."""
@@ -1182,39 +1570,54 @@ def post_auth_login(
     payload: LoginUserRequest,
     request: Request = None,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
-    """Authenticate an existing user with email and password, enforcing 5 failures / 15 min per email and IP."""
+    """Authenticate an existing user with email/phone and password, enforcing 5 failures / 15 min."""
+    clean_identifier = (payload.email or "").strip().lower()
+    client_ip = (
+        request.client.host
+        if request is not None and getattr(request, "client", None) is not None
+        else "127.0.0.1"
+    ) or "127.0.0.1"
+    now = time.time()
+
+    if _is_login_blocked(clean_identifier, client_ip, now):
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiadas tentativas falhadas. Aguarde 15 minutos antes de tentar novamente.",
+        )
+
     plataforma = obter_plataforma()
     if isinstance(plataforma, ApiPlataforma):
         try:
             auth_data = plataforma.autenticar(
-                identifier=payload.email,
+                identifier=clean_identifier,
                 password=payload.senha,
             )
+            if not auth_data.get("sucesso"):
+                _record_login_failure(clean_identifier, client_ip, now)
+                raise HTTPException(
+                    status_code=auth_data.get("status_code", 401),
+                    detail=auth_data.get("erro", GENERIC_LOGIN_ERROR),
+                )
             nl_user = auth_data.get("user") or {}
             user_id = str(nl_user.get("id", ""))
+            LOGIN_FAILURES_BY_EMAIL.pop(clean_identifier, None)
+            LOGIN_FAILURES_BY_IP.pop(client_ip, None)
             return {
                 "status": "ok",
                 "utilizador": {
                     "id": user_id,
                     "utilizador_externo_id": user_id,
-                    "nome": nl_user.get("full_name") or nl_user.get("nome") or "",
-                    "email": nl_user.get("email") or payload.email,
+                    "nome": nl_user.get("full_name") or nl_user.get("nome") or "Utilizador NongLink",
+                    "email": nl_user.get("email") or clean_identifier,
                     "telefone": nl_user.get("phone") or "",
                     "is_demo": False,
                 },
                 "token": auth_data.get("access_token"),
             }
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 401:
-                raise HTTPException(
-                    status_code=401,
-                    detail=GENERIC_LOGIN_ERROR,
-                ) from exc
-            raise HTTPException(
-                status_code=exc.response.status_code,
-                detail=f"Erro de autenticação no NongLink: {exc.response.text}",
-            ) from exc
+        except HTTPException:
+            raise
         except Exception as exc:
+            _record_login_failure(clean_identifier, client_ip, now)
             raise HTTPException(
                 status_code=502,
                 detail=f"Falha de comunicação com o serviço de autenticação NongLink: {str(exc)}",

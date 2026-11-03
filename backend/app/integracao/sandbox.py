@@ -142,3 +142,171 @@ class SandboxPlataforma(Plataforma):
             "farm_id": 1,
             "nome": parcela_ref or "Parcela 1",
         }
+
+    def listar_parcelas(
+        self,
+        token: str,
+    ) -> List[Dict[str, Any]]:
+        return [
+            {
+                "id": 1,
+                "name": "Parcela 1",
+                "location": "Luanda",
+                "size_hectares": 2.5,
+                "region_id": 1,
+            }
+        ]
+
+    def obter_estudo_campo(
+        self,
+        parcela_ref: Optional[str],
+        forcar_nova_analise: bool,
+        token: str,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        nome = parcela_ref or "Parcela 1"
+        return {
+            "status": "executed",
+            "parcela": nome,
+            "farm_id": 1,
+            "nova_analise": forcar_nova_analise,
+            "em_cache_24h": not forcar_nova_analise,
+            "data_imagem": "2026-10-25",
+            "nebulosidade_pct": 8.5,
+            "cloud_cover_pct": 8.5,
+            "ndvi_mean": 0.65,
+            "ndmi_mean": 0.22,
+            "ndti_mean": 0.05,
+            "salinity_index_mean": 0.08,
+            "recomendacoes": {
+                "irrigacao": "Humidade moderada (NDMI 0.22). Manter ciclo de rega habitual.",
+                "plantio": "Vigor vegetativo favorável (NDVI 0.65). Adequado para culturas sazonais.",
+                "solo": "Salinidade baixa (0.08). Não requer lavagem do solo.",
+            },
+            "fonte_recomendacoes": "recomendações do NongLink",
+            "aviso_leitura": (
+                "Esta leitura depende da data da imagem (2026-10-25) e da cobertura de nuvens (8.5%). "
+                "As orientações apresentadas são recomendações técnicas automáticas do NongLink."
+            ),
+        }
+
+    def listar_vendas(
+        self,
+        token: str,
+    ) -> List[Dict[str, Any]]:
+        return [
+            {
+                "order_id": 101,
+                "order_item_id": 201,
+                "product_name": "Tomate",
+                "quantity": 50.0,
+                "unit_price": 2200.0,
+                "status": "confirmed",
+                "created_at": "2026-10-28T14:30:00Z",
+                "buyer_name": "Comprador de Demonstração",
+            }
+        ]
+
+    def obter_resumo_vendas(
+        self,
+        token: str,
+    ) -> Dict[str, Any]:
+        return {
+            "gross_sales": 110000.0,
+            "platform_fee": 5500.0,
+            "net_earnings": 104500.0,
+        }
+
+    def obter_tendencias_vendas(
+        self,
+        token: str,
+    ) -> List[Dict[str, Any]]:
+        return [
+            {"date": "2026-10-28", "value": 110000.0}
+        ]
+
+    def resolver_produto(
+        self,
+        produto_ref: str,
+        token: str,
+    ) -> Dict[str, Any]:
+        return {
+            "status": "ok",
+            "produto_id": 1,
+            "nome": produto_ref or "Tomate",
+            "produto": {
+                "id": 1,
+                "name": produto_ref or "Tomate",
+                "price_per_unit": 2200.0,
+                "quantity_available": 100.0,
+            },
+        }
+
+    def actualizar_anuncio(
+        self,
+        produto_ref: str,
+        preco_kz_kg: Optional[float],
+        quantidade_kg: Optional[float],
+        confirmed: bool,
+        token: str,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        nome = produto_ref or "Tomate"
+        novo_preco = preco_kz_kg if preco_kz_kg is not None else 2200.0
+        nova_qtd = quantidade_kg if quantidade_kg is not None else 100.0
+        if not confirmed:
+            return {
+                "status": "cancelled_by_user",
+                "produto_id": 1,
+                "produto": nome,
+                "preco_kz_kg": novo_preco,
+                "quantidade_kg": nova_qtd,
+                "mensagem": {
+                    "pt": f"Actualização do anúncio '{nome}' não efectuada (aguarda confirmação do agricultor).",
+                    "fr": f"Mise à jour de l'annonce '{nome}' non effectuée (en attente de confirmation).",
+                    "en": f"Update of listing '{nome}' not executed (awaiting farmer confirmation).",
+                },
+            }
+        return {
+            "status": "executed",
+            "produto_id": 1,
+            "produto": nome,
+            "preco_kz_kg": novo_preco,
+            "quantidade_kg": nova_qtd,
+            "mensagem": {
+                "pt": f"Anúncio '{nome}' actualizado: {nova_qtd} kg a {novo_preco:.0f} Kz/kg.",
+                "fr": f"Annonce '{nome}' mise à jour : {nova_qtd} kg à {novo_preco:.0f} Kz/kg.",
+                "en": f"Listing '{nome}' updated: {nova_qtd} kg at {novo_preco:.0f} Kz/kg.",
+            },
+        }
+
+    def retirar_anuncio(
+        self,
+        produto_ref: str,
+        confirmed: bool,
+        token: str,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        nome = produto_ref or "Tomate"
+        if not confirmed:
+            return {
+                "status": "cancelled_by_user",
+                "produto_id": 1,
+                "produto": nome,
+                "mensagem": {
+                    "pt": f"Retirada do anúncio '{nome}' pendente: o produto ficará esgotado, mas não será apagado.",
+                    "fr": f"Retrait de l'annonce '{nome}' en attente : le produit sera épuisé mais non supprimé.",
+                    "en": f"Withdrawal of listing '{nome}' pending: product will be marked as sold out, but not deleted.",
+                },
+            }
+        return {
+            "status": "executed",
+            "produto_id": 1,
+            "produto": nome,
+            "quantidade_disponivel": 0.0,
+            "mensagem": {
+                "pt": f"Anúncio '{nome}' retirado de venda: ficará esgotado, mas não será apagado.",
+                "fr": f"Annonce '{nome}' retiré de la vente : il restera épuisé, mais ne sera pas supprimé.",
+                "en": f"Listing '{nome}' withdrawn from sale: it will be marked as out of stock, but not deleted.",
+            },
+        }

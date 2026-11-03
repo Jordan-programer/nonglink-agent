@@ -31,6 +31,15 @@ CROPS_CACHE_TTL_SECONDS = 300.0
 # Registo de acções em curso para protecção de idempotência e reconciliação
 _ACOES_EM_CURSO: Dict[str, Dict[str, Any]] = {}
 
+# Cache de análise de solo (farm_id -> (timestamp_expiracao, dados_dict)) - 24 horas
+_SOIL_CACHE: Dict[int, Tuple[float, Dict[str, Any]]] = {}
+SOIL_CACHE_TTL_SECONDS = 24 * 3600.0
+
+# Registo de análises de satélite disparadas por utilizador hoje (user_id -> lista de timestamps)
+_SOIL_ANALYSES_BY_USER: Dict[str, List[float]] = {}
+SOIL_MAX_POR_UTILIZADOR_DIA_DEFAULT = 3
+SOIL_ANALYZE_TIMEOUT_SECONDS = 90.0
+
 
 def _remover_acentos(texto: str) -> str:
     """Normaliza texto para minúsculas sem acentos."""
@@ -52,11 +61,13 @@ def _obter_tz_luanda():
 
 
 def limpar_caches_api() -> None:
-    """Limpa caches em memória de autenticação, culturas e ações."""
-    global _AUTH_CACHE, _CROPS_CACHE, _ACOES_EM_CURSO
+    """Limpa caches em memória de autenticação, culturas, solo e ações."""
+    global _AUTH_CACHE, _CROPS_CACHE, _ACOES_EM_CURSO, _SOIL_CACHE, _SOIL_ANALYSES_BY_USER
     _AUTH_CACHE.clear()
     _CROPS_CACHE = None
     _ACOES_EM_CURSO.clear()
+    _SOIL_CACHE.clear()
+    _SOIL_ANALYSES_BY_USER.clear()
 
 
 class ApiPlataforma(Plataforma):
@@ -881,3 +892,392 @@ class ApiPlataforma(Plataforma):
             return {"status": "error", "message": f"Erro do NongLink ao cancelar rega: {resp.text}"}
         except Exception as exc:
             return {"status": "error", "message": f"Falha de comunicação com o NongLink: {exc}"}
+
+    def listar_parcelas(self, token: str) -> List[Dict[str, Any]]:
+        """GET /farms/mine com Bearer token."""
+        return self.listar_farms_mine(token)
+
+    def obter_estudo_campo(
+        self,
+        parcela_ref: Optional[str],
+        forcar_nova_analise: bool,
+        token: str,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Consulta ou solicita observação de solo/satélite via Google Earth Engine."""
+        if not token:
+            return {"status": "error", "message": "Token de autenticação obrigatório para estudo de campo."}
+
+        # 1. Resolver parcela
+        res_parcela = self.resolver_parcela(parcela_ref, token)
+        if res_parcela.get("status") != "ok":
+            return res_parcela
+
+        farm_id = res_parcela["farm_id"]
+        nome_parcela = res_parcela.get("nome", f"Parcela #{farm_id}")
+        now = time.time()
+        headers = {"Authorization": f"Bearer {token.strip()}"}
+
+        # 2. Se forçada nova análise via POST /soil/{farm_id}/analyze (timeout de 90s, sem repetições automáticas)
+        if forcar_nova_analise:
+            user_key = str(user.get("id")) if user and user.get("id") else (str(user.get("email")) if user and user.get("email") else "user_default")
+            limite_diario = int(os.environ.get("SOLO_MAX_POR_UTILIZADOR_DIA", str(SOIL_MAX_POR_UTILIZADOR_DIA_DEFAULT)))
+
+            # Verificar quota de análises de satélite
+            historico = _SOIL_ANALYSES_BY_USER.get(user_key, [])
+            cutoff = now - 24 * 3600.0
+            historico = [t for t in historico if t > cutoff]
+            _SOIL_ANALYSES_BY_USER[user_key] = historico
+
+            if len(historico) >= limite_diario:
+                return {
+                    "status": "quota_excedida",
+                    "parcela": nome_parcela,
+                    "farm_id": farm_id,
+                    "limite_diario": limite_diario,
+                    "mensagem": (
+                        f"Atingiu o limite diário de {limite_diario} análises de satélite. "
+                        "Para poupar recursos, consulte os dados mais recentes da lavra ou tente novamente amanhã."
+                    ),
+                }
+
+            with httpx.Client(
+                base_url=self.base_url,
+                timeout=httpx.Timeout(SOIL_ANALYZE_TIMEOUT_SECONDS, connect=15.0, read=SOIL_ANALYZE_TIMEOUT_SECONDS, write=15.0),
+                transport=self.transport,
+            ) as client:
+                try:
+                    resp = client.post(f"/soil/{farm_id}/analyze", headers=headers, json={})
+                except (httpx.NetworkError, httpx.TimeoutException) as exc:
+                    return {
+                        "status": "error",
+                        "parcela": nome_parcela,
+                        "farm_id": farm_id,
+                        "mensagem": f"O processamento de imagens de satélite excedeu o tempo limite ({SOIL_ANALYZE_TIMEOUT_SECONDS:.0f}s). Tente novamente mais tarde.",
+                    }
+
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                _SOIL_ANALYSES_BY_USER[user_key].append(now)
+                _SOIL_CACHE[farm_id] = (now + SOIL_CACHE_TTL_SECONDS, data)
+                return self._formatar_resposta_solo(data, nome_parcela, farm_id, nova_analise=True, em_cache=False)
+
+            if resp.status_code == 400:
+                detail = resp.text
+                try:
+                    detail = resp.json().get("detail", detail)
+                except Exception:
+                    pass
+                return {
+                    "status": "sem_poligono",
+                    "codigo": 400,
+                    "parcela": nome_parcela,
+                    "farm_id": farm_id,
+                    "mensagem": (
+                        f"Esta parcela ('{nome_parcela}') ainda não tem um polígono desenhado. "
+                        "O limite da parcela deve ser desenhado na plataforma agrilink.store antes de solicitar a análise."
+                    ),
+                }
+
+            if resp.status_code == 404:
+                return {
+                    "status": "error",
+                    "codigo": 404,
+                    "parcela": nome_parcela,
+                    "farm_id": farm_id,
+                    "mensagem": f"Parcela '{nome_parcela}' não encontrada ou não pertence ao agricultor autenticado.",
+                }
+
+            return {
+                "status": "error",
+                "codigo": resp.status_code,
+                "parcela": nome_parcela,
+                "farm_id": farm_id,
+                "mensagem": f"A API do NongLink devolveu erro ao analisar solo (HTTP {resp.status_code}): {resp.text}",
+            }
+
+        # 3. Leitura padrão (GET /soil/{farm_id}/latest com cache de 24h)
+        cached = _SOIL_CACHE.get(farm_id)
+        if cached and now < cached[0]:
+            return self._formatar_resposta_solo(cached[1], nome_parcela, farm_id, nova_analise=False, em_cache=True)
+
+        try:
+            resp = self._request_with_retry("GET", f"/soil/{farm_id}/latest", headers=headers)
+        except (httpx.NetworkError, httpx.TimeoutException) as exc:
+            return {
+                "status": "error",
+                "parcela": nome_parcela,
+                "farm_id": farm_id,
+                "mensagem": "Falha de ligação ao consultar análise de solo mais recente.",
+            }
+
+        if resp.status_code == 200:
+            data = resp.json()
+            _SOIL_CACHE[farm_id] = (now + SOIL_CACHE_TTL_SECONDS, data)
+            return self._formatar_resposta_solo(data, nome_parcela, farm_id, nova_analise=False, em_cache=False)
+
+        if resp.status_code == 404:
+            return {
+                "status": "sem_analises",
+                "parcela": nome_parcela,
+                "farm_id": farm_id,
+                "mensagem": (
+                    f"Ainda não existem análises de solo/satélite para a parcela '{nome_parcela}'. "
+                    "Se o polígono já estiver desenhado em agrilink.store, peça ao assistente para realizar uma nova análise."
+                ),
+            }
+
+        return {
+            "status": "error",
+            "codigo": resp.status_code,
+            "parcela": nome_parcela,
+            "farm_id": farm_id,
+            "mensagem": f"Erro ao obter dados de solo (HTTP {resp.status_code}).",
+        }
+
+    def _formatar_resposta_solo(
+        self,
+        data: Dict[str, Any],
+        nome_parcela: str,
+        farm_id: int,
+        nova_analise: bool,
+        em_cache: bool,
+    ) -> Dict[str, Any]:
+        acq_date = str(data.get("acquisition_date") or data.get("created_at") or "")
+        cloud_cover = float(data.get("cloud_cover_pct") or 0.0)
+        ndvi = float(data.get("ndvi_mean") or 0.0)
+        ndmi = float(data.get("ndmi_mean") or 0.0)
+        ndti = float(data.get("ndti_mean") or 0.0)
+        salinidade = float(data.get("salinity_index_mean") or 0.0)
+        recs = data.get("recommendations") or {}
+
+        return {
+            "status": "executed",
+            "parcela": nome_parcela,
+            "farm_id": farm_id,
+            "nova_analise": nova_analise,
+            "em_cache_24h": em_cache,
+            "data_imagem": acq_date,
+            "nebulosidade_pct": round(cloud_cover, 1),
+            "cloud_cover_pct": round(cloud_cover, 1),
+            "ndvi_mean": round(ndvi, 3),
+            "ndmi_mean": round(ndmi, 3),
+            "ndti_mean": round(ndti, 3),
+            "salinity_index_mean": round(salinidade, 3),
+            "recomendacoes": recs,
+            "fonte_recomendacoes": "recomendações do NongLink",
+            "aviso_leitura": (
+                f"Esta leitura depende da data da imagem ({acq_date}) e da cobertura de nuvens ({cloud_cover:.1f}%). "
+                "As orientações apresentadas são recomendações técnicas automáticas do NongLink."
+            ),
+        }
+
+    def listar_vendas(self, token: str) -> List[Dict[str, Any]]:
+        """GET /orders/sales (modo só de leitura)."""
+        if not token:
+            return []
+        headers = {"Authorization": f"Bearer {token.strip()}"}
+        try:
+            resp = self._request_with_retry("GET", "/orders/sales", headers=headers)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as exc:
+            logger.warning("Erro ao listar vendas /orders/sales: %s", exc)
+        return []
+
+    def obter_resumo_vendas(self, token: str) -> Dict[str, Any]:
+        """GET /orders/sales/summary (vendas brutas, comissão da plataforma e rendimento líquido)."""
+        if not token:
+            return {"gross_sales": 0.0, "net_earnings": 0.0, "platform_fee": 0.0}
+        headers = {"Authorization": f"Bearer {token.strip()}"}
+        try:
+            resp = self._request_with_retry("GET", "/orders/sales/summary", headers=headers)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as exc:
+            logger.warning("Erro ao obter resumo de vendas: %s", exc)
+        return {"gross_sales": 0.0, "net_earnings": 0.0, "platform_fee": 0.0}
+
+    def obter_tendencias_vendas(self, token: str) -> List[Dict[str, Any]]:
+        """GET /orders/sales/trends (série temporal diária de vendas)."""
+        if not token:
+            return []
+        headers = {"Authorization": f"Bearer {token.strip()}"}
+        try:
+            resp = self._request_with_retry("GET", "/orders/sales/trends", headers=headers)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as exc:
+            logger.warning("Erro ao obter tendências de vendas: %s", exc)
+        return []
+
+    def resolver_produto(
+        self,
+        produto_ref: str,
+        token: str,
+    ) -> Dict[str, Any]:
+        """Resolve o anúncio do agricultor pelo nome a partir de GET /products/mine."""
+        produtos = self.listar_anuncios(token=token, user=None)
+        if not produtos:
+            return {
+                "status": "sem_produtos",
+                "produto_id": None,
+                "mensagem": "Não tem nenhum produto publicado no NongLink.",
+            }
+
+        ref_norm = _remover_acentos(produto_ref)
+        exact_matches = []
+        partial_matches = []
+
+        for p in produtos:
+            nome_norm = _remover_acentos(p.get("name", ""))
+            if nome_norm == ref_norm:
+                exact_matches.append(p)
+            elif ref_norm in nome_norm or nome_norm in ref_norm:
+                partial_matches.append(p)
+
+        matches = exact_matches or partial_matches
+        if not matches:
+            nomes = [p.get("name", f"Produto #{p['id']}") for p in produtos]
+            return {
+                "status": "not_found",
+                "produto_id": None,
+                "mensagem": f"Não encontrei o produto '{produto_ref}' nos seus anúncios ({', '.join(nomes)}).",
+            }
+
+        if len(matches) == 1:
+            p = matches[0]
+            return {
+                "status": "ok",
+                "produto_id": p["id"],
+                "nome": p.get("name"),
+                "produto": p,
+            }
+
+        nomes = [f"{p.get('name')} (ID #{p['id']})" for p in matches]
+        return {
+            "status": "multiplos",
+            "produto_id": None,
+            "mensagem": f"Encontrei mais de um anúncio correspondente ({', '.join(nomes)}). Qual deles pretende actualizar?",
+            "produtos": matches,
+        }
+
+    def actualizar_anuncio(
+        self,
+        produto_ref: str,
+        preco_kz_kg: Optional[float],
+        quantidade_kg: Optional[float],
+        confirmed: bool,
+        token: str,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """PATCH /products/{id} com novo preço e/ou quantidade disponível."""
+        if not token:
+            return {"status": "error", "message": "Token de autenticação obrigatório."}
+
+        res_prod = self.resolver_produto(produto_ref, token)
+        if res_prod.get("status") != "ok":
+            return res_prod
+
+        prod = res_prod["produto"]
+        prod_id = res_prod["produto_id"]
+        prod_nome = res_prod["nome"]
+
+        novo_preco = float(preco_kz_kg) if preco_kz_kg is not None else float(prod.get("price_per_unit", 0))
+        nova_qtd = float(quantidade_kg) if quantidade_kg is not None else float(prod.get("quantity_available", 0))
+
+        if not confirmed:
+            return {
+                "status": "cancelled_by_user",
+                "produto_id": prod_id,
+                "produto": prod_nome,
+                "preco_kz_kg": novo_preco,
+                "quantidade_kg": nova_qtd,
+                "mensagem": {
+                    "pt": f"Actualização do anúncio '{prod_nome}' não efectuada (aguarda confirmação do agricultor).",
+                    "fr": f"Mise à jour de l'annonce '{prod_nome}' non effectuée (en attente de confirmation).",
+                    "en": f"Update of listing '{prod_nome}' not executed (awaiting farmer confirmation).",
+                },
+            }
+
+        payload: Dict[str, Any] = {}
+        if preco_kz_kg is not None:
+            payload["price_per_unit"] = novo_preco
+        if quantidade_kg is not None:
+            payload["quantity_available"] = nova_qtd
+
+        headers = {"Authorization": f"Bearer {token.strip()}"}
+        try:
+            resp = self._request_with_retry("PATCH", f"/products/{prod_id}", headers=headers, json_data=payload)
+            if resp.status_code in (200, 204):
+                data = resp.json() if resp.status_code == 200 else {}
+                return {
+                    "status": "executed",
+                    "produto_id": prod_id,
+                    "produto": prod_nome,
+                    "preco_kz_kg": novo_preco,
+                    "quantidade_kg": nova_qtd,
+                    "resultado": data,
+                    "mensagem": {
+                        "pt": f"Anúncio '{prod_nome}' (ID #{prod_id}) actualizado: {nova_qtd} kg a {novo_preco:.0f} Kz/kg.",
+                        "fr": f"Annonce '{prod_nome}' (ID #{prod_id}) mise à jour : {nova_qtd} kg à {novo_preco:.0f} Kz/kg.",
+                        "en": f"Listing '{prod_nome}' (ID #{prod_id}) updated: {nova_qtd} kg at {novo_preco:.0f} Kz/kg.",
+                    },
+                }
+            if resp.status_code == 404:
+                return {"status": "error", "message": f"Produto #{prod_id} não encontrado ou pertence a outro utilizador."}
+            return {"status": "error", "message": f"Erro ao actualizar anúncio no NongLink (HTTP {resp.status_code}): {resp.text}"}
+        except Exception as exc:
+            return {"status": "error", "message": f"Falha de comunicação ao actualizar anúncio: {exc}"}
+
+    def retirar_anuncio(
+        self,
+        produto_ref: str,
+        confirmed: bool,
+        token: str,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """PATCH /products/{id} com quantity_available = 0. Nunca chama DELETE."""
+        if not token:
+            return {"status": "error", "message": "Token de autenticação obrigatório."}
+
+        res_prod = self.resolver_produto(produto_ref, token)
+        if res_prod.get("status") != "ok":
+            return res_prod
+
+        prod_id = res_prod["produto_id"]
+        prod_nome = res_prod["nome"]
+
+        if not confirmed:
+            return {
+                "status": "cancelled_by_user",
+                "produto_id": prod_id,
+                "produto": prod_nome,
+                "mensagem": {
+                    "pt": f"Retirada do anúncio '{prod_nome}' pendente: o produto ficará esgotado, mas não será apagado.",
+                    "fr": f"Retrait de l'annonce '{prod_nome}' en attente : le produit sera épuisé mais non supprimé.",
+                    "en": f"Withdrawal of listing '{prod_nome}' pending: product will be marked as sold out, but not deleted.",
+                },
+            }
+
+        headers = {"Authorization": f"Bearer {token.strip()}"}
+        try:
+            # Nunca chama DELETE: faz PATCH com quantity_available=0
+            resp = self._request_with_retry("PATCH", f"/products/{prod_id}", headers=headers, json_data={"quantity_available": 0.0})
+            if resp.status_code in (200, 204):
+                return {
+                    "status": "executed",
+                    "produto_id": prod_id,
+                    "produto": prod_nome,
+                    "quantidade_disponivel": 0.0,
+                    "mensagem": {
+                        "pt": f"Anúncio '{prod_nome}' (ID #{prod_id}) retirado de venda: ficará esgotado, mas não será apagado.",
+                        "fr": f"Annonce '{prod_nome}' (ID #{prod_id}) retiré de la vente : il restera épuisé, mais ne sera pas supprimé.",
+                        "en": f"Listing '{prod_nome}' (ID #{prod_id}) withdrawn from sale: it will be marked as out of stock, but not deleted.",
+                    },
+                }
+            if resp.status_code == 404:
+                return {"status": "error", "message": f"Produto #{prod_id} não encontrado ou pertence a outro utilizador."}
+            return {"status": "error", "message": f"Erro ao retirar anúncio no NongLink (HTTP {resp.status_code}): {resp.text}"}
+        except Exception as exc:
+            return {"status": "error", "message": f"Falha de comunicação ao retirar anúncio: {exc}"}

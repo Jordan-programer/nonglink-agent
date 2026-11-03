@@ -39,6 +39,12 @@ ASR_TRANSCRIBE_URL: str = f"{META_BASE_URL}/asr/transcribe"
 MAX_AGENT_TURNS: int = 5
 MAX_AUDIO_FILE_BYTES: int = 25 * 1024 * 1024
 
+# NongLink integration configuration
+DEFAULT_NONGLINK_REGISTER_URL: str = "https://agrilink.store/registar"
+DEFAULT_SOLO_MAX_POR_UTILIZADOR_DIA: int = 3
+SOLO_CACHE_TTL_SECONDS: float = 24 * 3600.0  # Cache de 24 h por parcela
+SOLO_ANALYZE_TIMEOUT_SECONDS: float = 90.0   # Timeout de 90 s só para o POST de análise GEE
+
 # Load environment variables from the project root .env file
 load_dotenv(dotenv_path=ENV_FILE_PATH)
 

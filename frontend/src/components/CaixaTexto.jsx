@@ -12,7 +12,7 @@ export default function CaixaTexto({
   disabled = false,
   autoFocusTrigger = 0,
 }) {
-  const { t } = useApp();
+  const { t, requestMediaConsent } = useApp();
 
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState("");
@@ -98,9 +98,11 @@ export default function CaixaTexto({
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    setSelectedFile(file);
-    setPreviewUrl(URL.createObjectURL(file));
+    requestMediaConsent(() => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setSelectedFile(file);
+      setPreviewUrl(URL.createObjectURL(file));
+    });
     e.target.value = "";
   };
 
@@ -122,18 +124,34 @@ export default function CaixaTexto({
   };
 
   const handleStartVoice = () => {
-    if (
-      typeof window === "undefined" ||
-      !navigator.mediaDevices ||
-      !navigator.mediaDevices.getUserMedia ||
-      typeof window.MediaRecorder === "undefined"
-    ) {
-      setMicAvailable(false);
-      setMicErrorMessage(t.micError);
-      return;
-    }
-    setMicErrorMessage("");
-    setIsRecording(true);
+    requestMediaConsent(() => {
+      if (
+        typeof window === "undefined" ||
+        !navigator.mediaDevices ||
+        !navigator.mediaDevices.getUserMedia ||
+        typeof window.MediaRecorder === "undefined"
+      ) {
+        setMicAvailable(false);
+        setMicErrorMessage(t.micError);
+        return;
+      }
+      setMicErrorMessage("");
+      setIsRecording(true);
+    });
+  };
+
+  const handleTriggerCamera = () => {
+    setAttachMenuOpen(false);
+    requestMediaConsent(() => {
+      cameraInputRef.current?.click();
+    });
+  };
+
+  const handleTriggerGallery = () => {
+    setAttachMenuOpen(false);
+    requestMediaConsent(() => {
+      galleryInputRef.current?.click();
+    });
   };
 
   return (
@@ -256,10 +274,7 @@ export default function CaixaTexto({
                       <button
                         type="button"
                         role="menuitem"
-                        onClick={() => {
-                          setAttachMenuOpen(false);
-                          cameraInputRef.current?.click();
-                        }}
+                        onClick={handleTriggerCamera}
                         className="flex w-full items-center gap-2 rounded-item px-2.5 py-2 text-left text-sm text-text hover:bg-sidebar-hover transition-ui"
                       >
                         <svg
@@ -281,10 +296,7 @@ export default function CaixaTexto({
                       <button
                         type="button"
                         role="menuitem"
-                        onClick={() => {
-                          setAttachMenuOpen(false);
-                          galleryInputRef.current?.click();
-                        }}
+                        onClick={handleTriggerGallery}
                         className="flex w-full items-center gap-2 rounded-item px-2.5 py-2 text-left text-sm text-text hover:bg-sidebar-hover transition-ui"
                       >
                         <svg

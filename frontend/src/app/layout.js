@@ -3,6 +3,7 @@ import { AppProvider } from "@/context/AppContext";
 import BarraLateral from "@/components/BarraLateral";
 import ModalAuth from "@/components/ModalAuth";
 import DefinicoesDialog from "@/components/DefinicoesDialog";
+import ConfirmacaoMediaDialog from "@/components/ConfirmacaoMediaDialog";
 
 export const metadata = {
   title: "NongLink",
@@ -32,6 +33,7 @@ export default function RootLayout({ children }) {
           </div>
           <ModalAuth />
           <DefinicoesDialog />
+          <ConfirmacaoMediaDialog />
         </AppProvider>
       </body>
     </html>

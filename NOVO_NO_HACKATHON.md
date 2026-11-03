@@ -18,11 +18,22 @@ Este documento distingue claramente o que existia antes do hackathon e o que foi
 
 ### B. Agente Multimodal com Ferramentas e Confirmação (`backend/app/agent.py`)
 - Ciclo de agente (máximo 5 voltas) com `muse-spark-1.3` (`POST /v1/responses`), preservando `reasoning.encrypted_content` e `response.output` em cada volta.
-- Quatro ferramentas:
-  1. `obter_preco(cultura)` — consulta preços fictícios de demonstração em Kz/kg;
-  2. `analisar_foto(foto_id, objecto)` — chama `sam-3.1`, devolve contagem, cobertura e caixas, e mostra a conta de peso médio de demonstração antes de propor um anúncio;
-  3. `criar_anuncio(cultura, quantidade_kg, preco_kz_kg)` — publicação de anúncio com confirmação obrigatória;
-  4. `agendar_rega(parcela, hora)` — agendamento de rega com confirmação obrigatória.
+- Ferramentas disponíveis ao agente:
+  1. `obter_preco(cultura)` — consulta preços de referência (sandbox) ou cotações oficiais com confiança e intervalo (modo API);
+  2. `analisar_foto(foto_id, objecto)` — segmentação e contagem SAM 3.1 com prova de imagem anotada;
+  3. `criar_anuncio(cultura, quantidade_kg, preco_kz_kg)` — publicação de anúncio com confirmação obrigatória em talão;
+  4. `actualizar_anuncio(produto, preco, quantidade)` — actualização de preço/quantidade de produto existente com confirmação;
+  5. `retirar_anuncio(produto)` — retirada de anúncio colocando stock a zero sem DELETE com confirmação;
+  6. `agendar_rega(parcela, hora)` — agendamento de rega com conversão horária UTC/Luanda e confirmação;
+  7. `cancelar_rega(id)` — cancelamento de rega agendada com confirmação;
+  8. `listar_parcelas()` — listagem das parcelas agrícolas do agricultor;
+  9. `estudo_campo(parcela, nova_analise)` — dados de satélite Google Earth Engine e recomendações de solo;
+  10. `listar_vendas()`, `resumo_vendas()`, `tendencias_vendas()` — relatórios de vendas e faturação (apenas leitura).
+
+
+
+
+
 - Prompt de sistema multilingue (**PT, FR, EN**) que proíbe inventar preços/estatísticas ou diagnosticar doenças na foto.
 
 ### C. Voz ASR e Segmentação Visual SAM 3.1 (`backend/app/voz.py` e `backend/app/visao.py`)
@@ -166,12 +177,22 @@ Implementação da camada de integração com a API REST oficial do NongLink (`/
    - Marcação de auditoria com `criada_via="agente"`.
 8. **Upload Opcional de Imagens (`ANEXAR_FOTO=1`):**
    - Envio de foto para `POST /products/upload-image` e propagação do `image_url` no anúncio.
-9. **Suite de Testes com MockTransport (`backend/tests/test_integracao_api.py`):**
-   - 16 testes automatizados cobrindo token, 401, 404, 422, 5xx, timeouts, reconciliação, acentos, parcelas, conflito 409, paridade de contrato e endpoints FastAPI;
+9. **Novas Ferramentas e Satélite Google Earth Engine (GEE):**
+   - `listar_parcelas`: consulta parcelas do agricultor (`GET /farms/mine`);
+   - `estudo_campo`: consulta o último estudo e histórico de solo (`GET /soil/{farm_id}/latest`, `/history`) e só executa nova análise GEE (`POST /soil/{farm_id}/analyze`) sob pedido expresso do agricultor. Conta com timeout de 90 s, zero repetições automáticas, cache de 24 horas no agente e quota diária de `SOLO_MAX_POR_UTILIZADOR_DIA` (3 por omissão). Em caso de erro 400 (sem polígono), informa que o contorno deve ser desenhado em `agrilink.store` (nunca recebe coordenadas/polígonos por chat). Todas as recomendações de rega, plantio e solo são citadas como "recomendações do NongLink", com aviso sobre a data da imagem e nebulosidade (`cloud_cover_pct`), sem diagnósticos de pragas/doenças ou garantias de produtividade;
+   - `listar_vendas`, `resumo_vendas` e `tendencias_vendas`: relatórios de vendas e desempenho (`GET /orders/sales`, `/summary`, `/trends`), estritamente de leitura. Esclarece que a alteração de estado das encomendas é reservada à plataforma;
+   - `actualizar_anuncio`: actualização de preço e stock via `PATCH /products/{id}` mediante confirmação no talão;
+   - `retirar_anuncio`: retira o anúncio colocando `quantity_available = 0.0` via `PATCH /products/{id}`, **nunca invocando `DELETE`**; o talão avisa expressamente: *"ficará esgotado, mas não será apagado"*;
+   - `cancelar_rega`: cancela regas agendadas via `PATCH /irrigations/{id}/cancel` mediante confirmação em duas etapas.
+10. **Configuração Pública e Ecrã de Entrada Adaptativo:**
+   - Endpoint público `GET /config` devolvendo `{modo, registo_url, aviso}` com `registo_url` configurável via `NONGLINK_REGISTER_URL` (por omissão `https://agrilink.store/registar`);
+   - No modo `api`, o modal de autenticação bloqueia o acesso anónimo ou convidado, exibe erro genérico após limite de tentativas, disponibiliza a opção "Criar conta" com aviso (*"Depois de criar a conta, volte aqui e entre"*), e o menu Definições oculta edição de palavra-passe/eliminação de conta exibindo o atalho *"Gerir a conta em agrilink.store"*. Qualquer resposta `401` força o regresso imediato a este ecrã.
+11. **Suite de Testes com MockTransport (`backend/tests/test_integracao_api.py`):**
+   - 25 testes automatizados cobrindo token, 401, 404, 422, 5xx, timeouts (10 s padrão e 90 s para GEE), reconciliação, acentos, parcelas, conflito 409, quotas diárias de satélite, ausência de DELETE em todas as chamadas e paridade integral do contrato `Plataforma`;
    - Teste de integração real contra o backend local NongLink (opcional, `@pytest.mark.skipif(TEST_REAL_NONGLINK != "1")`).
 
 
-### K. Containerização com Docker e Preparação para Alojamento em Nuvem
+### M. Containerização com Docker e Preparação para Alojamento em Nuvem
 
 1. **`backend/Dockerfile`:**
    - Imagem base `python:3.12.7-slim` (versão fixada, nunca `latest`);

@@ -196,6 +196,76 @@
       "path_params": {
         "id": "integer"
       }
+    },
+    "soil_latest": {
+      "metodo": "GET",
+      "caminho": "/soil/{farm_id}/latest",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Devolve a observação mais recente de solo/satélite da parcela com recomendações.",
+      "path_params": {
+        "farm_id": "integer"
+      }
+    },
+    "soil_history": {
+      "metodo": "GET",
+      "caminho": "/soil/{farm_id}/history",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Devolve as últimas 12 observações históricas de solo/satélite da parcela.",
+      "path_params": {
+        "farm_id": "integer"
+      }
+    },
+    "soil_analyze": {
+      "metodo": "POST",
+      "caminho": "/soil/{farm_id}/analyze",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Dispara nova análise de solo via Google Earth Engine a partir do polígono previamente desenhado na lavra.",
+      "path_params": {
+        "farm_id": "integer"
+      },
+      "request_body": {
+        "polygon": "object (opcional se a parcela já tiver limite guardado)"
+      }
+    },
+    "orders_sales": {
+      "metodo": "GET",
+      "caminho": "/orders/sales",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Lista as vendas de produtos do agricultor autenticado em modo só de leitura."
+    },
+    "orders_sales_summary": {
+      "metodo": "GET",
+      "caminho": "/orders/sales/summary",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Devolve o resumo financeiro (vendas brutas, comissão da plataforma e rendimento líquido) do agricultor."
+    },
+    "orders_sales_trends": {
+      "metodo": "GET",
+      "caminho": "/orders/sales/trends",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Devolve a série temporal diária de valor de vendas do agricultor."
+    },
+    "products_update": {
+      "metodo": "PATCH",
+      "caminho": "/products/{id}",
+      "autenticacao": "Bearer",
+      "origem": "existente",
+      "descricao": "Atualiza campos de um anúncio (preço, quantidade disponível). Para retirar de venda, passa quantity_available=0 (nunca DELETE).",
+      "path_params": {
+        "id": "integer"
+      },
+      "request_body": {
+        "price_per_unit": "float (opcional)",
+        "quantity_available": "float (opcional)",
+        "name": "string (opcional)",
+        "unit": "string (opcional)"
+      }
     }
   }
 }

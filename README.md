@@ -50,6 +50,10 @@ Copie `.env.example` para `.env` na raiz do projecto (`~\nonglink-agent\.env`):
 | :--- | :---: | :--- |
 | `MODEL_API_KEY` | **Sim** | Chave de autenticação Bearer para `https://api.meta.ai/v1` (lida exclusivamente via `backend/app/config.py`). |
 | `NEXT_PUBLIC_API_URL` | Opcional | URL da API FastAPI consumido pelo front-end Next.js (por omissão: `http://127.0.0.1:8000`). Nota: no Docker, é injectado como argumento de build (`ARG`) porque o Next.js embute variáveis públicas no bundle cliente durante a compilação. |
+| `MODO_PLATAFORMA` | Opcional | Modo da plataforma: `sandbox` (por omissão) ou `api` (NongLink em produção). |
+| `NONGLINK_API_URL` | Opcional | URL base da API NongLink em modo `api` (ex: `https://agrilink.store/api/v1`). |
+| `NONGLINK_REGISTER_URL` | Opcional | URL para registo de novos utilizadores em modo `api` (por omissão: `https://agrilink.store/registar`). |
+| `SOLO_MAX_POR_UTILIZADOR_DIA` | Opcional | Quota máxima diária de análises de satélite GEE por utilizador (por omissão: `3`). |
 
 ---
 
@@ -120,7 +124,7 @@ cd ~\nonglink-agent\backend
 ..\.venv\Scripts\python.exe -m pytest tests\test_integracao_api.py -v
 ```
 
-Os testes 4, 5 e 6 usam uma base de dados temporária `backend/nonglink_test.db`, que é apagada no fim, e não precisam da `MODEL_API_KEY`. O teste 7 valida exaustivamente os 16 cenários de integração da API REST sem necessidade de rede real.
+Os testes 4, 5 e 6 usam uma base de dados temporária `backend/nonglink_test.db`, que é apagada no fim, e não precisam da `MODEL_API_KEY`. O teste 7 valida exaustivamente os 25 cenários de integração da API REST (incluindo Google Earth Engine, quotas, gestão de anúncios sem DELETE, vendas apenas de leitura e reconciliação) sem necessidade de rede real.
 
 ---
 
@@ -139,16 +143,20 @@ A especificação completa está documentada em [`backend/app/integracao/mapa_en
 | `/api/v1/auth/login` | `POST` | **Existente** | Login reencaminhado para o NongLink, devolvendo token JWT oficial (expiração em 60 min, sem refresh). |
 | `/api/v1/auth/me` | `GET` | **Existente** | Validação do Bearer token com cache de 60 s em memória. O ID do utilizador NongLink é associado às conversas (`utilizador_externo_id`). |
 | `/api/v1/crops/` | `GET` | **Existente** | Catálogo público de culturas. Cache em memória de 5 minutos com resolução insensível a acentos (`feijao` -> `Feijão`). |
-| `/api/v1/market/price-suggestions` | `POST` | **Existente** | Consulta de preços com `crop_id` e `region_id`. Apresenta intervalo (`min_price` a `max_price`), confiança e justificação com aviso de que é indicativo. |
+| `/api/v1/market/price-suggestions` | `POST` | **Existente** | Consulta de preços com `crop_id` e `region_id`. Apresenta intervalo (`min_price` a `max_price`), confiança e justificação com aviso de que é indicativo. Se o perfil não tiver região, avisa que não consegue sugerir preços e pergunta a província. |
 | `/api/v1/market/prices` | `GET` | **Existente** | Consulta auxiliar de cotações históricas por cultura e região. |
-| `/api/v1/farms/mine` | `GET` | **Existente** | Resolução de parcelas: se o agricultor tiver 1 parcela, usa-a; se tiver várias, pergunta qual; se não tiver nenhuma, explica a necessidade de criá-la e não cria nada sozinho. |
+| `/api/v1/farms/mine` | `GET` | **Existente** | Ferramenta `listar_parcelas`: se o agricultor tiver 1 parcela, usa-a; se tiver várias, pergunta qual; se não tiver nenhuma, explica a necessidade de criá-la e não cria nada sozinho. |
 | `/api/v1/farms/` | `POST` | **Existente** | Registo de novas parcelas agrícolas na plataforma. |
 | `/api/v1/products/` | `POST` | **Existente** | Publicação de anúncios de venda após confirmação explícita no talão. |
 | `/api/v1/products/mine` | `GET` | **Existente** | Consulta de anúncios do agricultor e reconciliação automática pós-timeout. |
+| `/api/v1/products/{id}` | `PATCH` | **Existente** | Ferramentas `actualizar_anuncio` (preço/quantidade) e `retirar_anuncio` (`quantity_available=0`, sem DELETE; o talão avisa: *"ficará esgotado, mas não será apagado"*). |
 | `/api/v1/products/upload-image` | `POST` | **Existente** | Upload opcional de fotografia da colheita quando `ANEXAR_FOTO=1`. |
 | `/api/v1/farms/{farm_id}/irrigations` | `POST` | **Criado no Hackathon** | Agendamento de rega com `scheduled_time` em UTC (convertido de `Africa/Luanda`), `duration_minutes` (1 a 600, por omissão 30 min via `DURACAO_REGA_PADRAO`), `criada_via="agente"`. Em caso de erro 409 (sobreposição), o agente explica o conflito e sugere outro horário sem repetir o pedido. |
 | `/api/v1/irrigations/mine` | `GET` | **Criado no Hackathon** | Listagem de regas do agricultor e reconciliação pós-timeout. |
-| `/api/v1/irrigations/{id}/cancel` | `PATCH` | **Criado no Hackathon** | Cancelamento de regas previamente agendadas. |
+| `/api/v1/irrigations/{id}/cancel` | `PATCH` | **Criado no Hackathon** | Ferramenta `cancelar_rega`: cancelamento de regas previamente agendadas após confirmação no talão. |
+| `/api/v1/soil/{farm_id}/latest` e `/history` | `GET` | **Existente** | Ferramenta `estudo_campo`: consulta o último estudo de solo e histórico. Cache de 24 horas no agente. |
+| `/api/v1/soil/{farm_id}/analyze` | `POST` | **Existente** | Execução de nova análise de satélite Google Earth Engine (GEE). Só invocada se o agricultor solicitar explicitamente. Timeout de 90 s, zero repetições automáticas, limite diário `SOLO_MAX_POR_UTILIZADOR_DIA` (3 por omissão). Se erro 400 (sem polígono), informa que o limite deve ser desenhado em `agrilink.store` (nunca recebe polígonos pelo chat). Recomendações citadas como "recomendações do NongLink" com aviso de nebulosidade (`cloud_cover_pct`). Sem diagnósticos de doenças nem garantias de safra. |
+| `/api/v1/orders/sales`, `/summary`, `/trends` | `GET` | **Existente** | Ferramentas `listar_vendas`, `resumo_vendas` e `tendencias_vendas` (apenas leitura). Se for solicitada alteração de estado da encomenda, informa com clareza que isso não está disponível ao agricultor. |
 
 ### Resiliência, Duplicados e Idempotência
 
@@ -164,7 +172,9 @@ A especificação completa está documentada em [`backend/app/integracao/mapa_en
 > [!WARNING]
 > **Só dados de demonstração.** Este é um protótipo de hackathon num repositório público. Só use dados fictícios: as contas guardam o email e um hash da palavra-passe. Não introduza palavras-passe que use noutros serviços, nem fotografias ou gravações sensíveis.
 
-- **Autenticação obrigatória:** todos os endpoints exigem `Authorization: Bearer <token>`, excepto `POST /auth/registar`, `POST /auth/login`, `POST /auth/demo`, `/docs` e `/openapi.json`. Sem token válido a resposta é `401`.
+- **Autenticação obrigatória:** todos os endpoints exigem `Authorization: Bearer <token>`, excepto `GET /health`, `GET /config`, `POST /auth/registar`, `POST /auth/login`, `POST /auth/demo`, `/docs` e `/openapi.json`. Sem token válido a resposta é `401`.
+- **Configuração pública (`GET /config`):** devolve `{modo, registo_url, aviso}` permitindo ao front-end adaptar a interface dinamicamente:
+  - Em **modo `api`**, o ecrã de entrada não permite encerramento nem modo convidado. Apresenta o botão **"Entrar"** (com email ou telefone e palavra-passe, rate limit e erro genérico) e o botão **"Criar conta"** (que abre `agrilink.store/registar` num novo separador com o aviso *"Depois de criar a conta, volte aqui e entre"*). O perfil exibe os dados obtidos de `GET /auth/me`, enquanto a secção Definições oculta opções de alteração de senha/eliminação e fornece o link *"Gerir a conta em agrilink.store"*. Qualquer resposta `401` força o regresso imediato a este ecrã.
 - **Isolamento por utilizador:** conversas, mensagens, anúncios, regas, fotos e acções pendentes (`/confirmar`) pertencem a um utilizador. Um recurso de outro utilizador devolve sempre `404`. Linhas antigas sem dono ficam invisíveis.
 - **Fotos:** cada foto recebe um identificador aleatório (`secrets.token_urlsafe(12)`) e só é servida ao dono em `GET /foto/{id}` / `GET /fotos/{id}`. O front-end carrega-as com `fetch` autenticado e um URL `blob:` local.
 - **Sessões:** a base de dados guarda apenas o SHA-256 do token. As sessões expiram ao fim de **7 dias** (contas normais) ou **24 horas** (convidados); sessões expiradas são rejeitadas e apagadas. `POST /auth/logout` apaga a sessão.

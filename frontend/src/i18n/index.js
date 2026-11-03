@@ -175,7 +175,11 @@ export const translations = {
     btnConfirmDeleteAccount: "Eliminar definitivamente",
 
     demoNotice:
-      "Demonstração. Não escreva dados pessoais. Os dados de convidados são apagados após 24 horas.",
+      "Demonstração do hackathon. Não envie dados pessoais reais. Textos, vozes e fotos são processados por modelos da Meta. Os dados de convidados são apagados após 24 horas.",
+    hackathonNotice:
+      "Demonstração do hackathon. Não envie dados pessoais reais. Textos, vozes e fotos são processados por modelos da Meta. Os dados de convidados são apagados após 24 horas.",
+    mediaNoticeTitle: "Confirmação de Envio de Dados",
+    mediaNoticeConfirm: "Compreendo e continuar",
     error429: "Atingiu o limite diário da demonstração. Tente amanhã.",
     error503:
       "O assistente está temporariamente em manutenção para gestão de créditos da demonstração. Volte em breve.",
@@ -356,7 +360,11 @@ export const translations = {
     btnConfirmDeleteAccount: "Supprimer définitivement",
 
     demoNotice:
-      "Démonstration. Ne saisissez pas de données personnelles. Les données des invités sont supprimées après 24 heures.",
+      "Démonstration du hackathon. N'envoyez pas de données personnelles réelles. Les textes, voix et photos sont traités par des modèles de Meta. Les données des invités sont supprimées après 24 heures.",
+    hackathonNotice:
+      "Démonstration du hackathon. N'envoyez pas de données personnelles réelles. Les textes, voix et photos sont traités par des modèles de Meta. Les données des invités sont supprimées après 24 heures.",
+    mediaNoticeTitle: "Confirmation d'envoi de données",
+    mediaNoticeConfirm: "Compris et continuer",
     error429:
       "Vous avez atteint la limite quotidienne de démonstration. Réessayez demain.",
     error503:
@@ -538,7 +546,11 @@ export const translations = {
     btnConfirmDeleteAccount: "Permanently delete account",
 
     demoNotice:
-      "Demo. Do not enter personal data. Guest data is deleted after 24 hours.",
+      "Hackathon demo. Do not send real personal data. Texts, voices, and photos are processed by Meta models. Guest data is deleted after 24 hours.",
+    hackathonNotice:
+      "Hackathon demo. Do not send real personal data. Texts, voices, and photos are processed by Meta models. Guest data is deleted after 24 hours.",
+    mediaNoticeTitle: "Data Submission Confirmation",
+    mediaNoticeConfirm: "Understood and continue",
     error429: "You have reached the daily demo limit. Please try tomorrow.",
     error503:
       "The assistant is temporarily under maintenance for demo credit management. Please check back soon.",

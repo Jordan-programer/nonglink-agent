@@ -568,6 +568,261 @@ def test_api_mode_anuncios_e_regas_endpoints(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 13. Testes das Novas Ferramentas (Parcelas, Solo GEE, Vendas, PATCH produtos)
+# ---------------------------------------------------------------------------
+def test_endpoint_config_publico(monkeypatch):
+    """Verifica GET /config com modo, registo_url e aviso."""
+    monkeypatch.setenv("MODO_PLATAFORMA", "api")
+    monkeypatch.setenv("NONGLINK_REGISTER_URL", "https://agrilink.store/registar")
+
+    from app.main import app
+    client = TestClient(app)
+    resp = client.get("/config")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["modo"] == "api"
+    assert data["registo_url"] == "https://agrilink.store/registar"
+    assert "aviso" in data
+
+
+def test_listar_parcelas_mock():
+    """Garante que listar_parcelas consulta GET /farms/mine com Bearer token."""
+    requests_received = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        requests_received.append(request)
+        if request.url.path == "/api/v1/farms/mine":
+            return httpx.Response(200, json=[
+                {"id": 1, "name": "Lavra Sul", "size_hectares": 5.0, "location": "Caxito"},
+                {"id": 2, "name": "Lavra Norte", "size_hectares": 3.2, "location": "Uíge"},
+            ])
+        return httpx.Response(404, json={})
+
+    transport = httpx.MockTransport(mock_handler)
+    api = ApiPlataforma(base_url="http://teste-nonglink/api/v1", transport=transport)
+
+    parcelas = api.listar_parcelas("token-test-123")
+    assert len(parcelas) == 2
+    assert parcelas[0]["name"] == "Lavra Sul"
+    assert requests_received[0].headers["authorization"] == "Bearer token-test-123"
+
+
+def test_estudo_campo_latest_e_cache():
+    """Garante leitura de solo via GET /soil/{farm_id}/latest e validação de cache de 24h."""
+    calls_made = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        calls_made.append(request.url.path)
+        if request.url.path == "/api/v1/farms/mine":
+            return httpx.Response(200, json=[{"id": 10, "name": "Lavra Principal"}])
+        if request.url.path == "/api/v1/soil/10/latest":
+            return httpx.Response(200, json={
+                "farm_id": 10,
+                "acquisition_date": "2026-10-20",
+                "cloud_cover_pct": 5.2,
+                "ndvi_mean": 0.58,
+                "ndmi_mean": 0.18,
+                "ndti_mean": 0.04,
+                "salinity_index_mean": 0.07,
+                "recommendations": {
+                    "irrigacao": "Humidade adequada.",
+                    "plantio": "Bom vigor vegetativo.",
+                    "solo": "Salinidade normal.",
+                },
+            })
+        return httpx.Response(404, json={})
+
+    transport = httpx.MockTransport(mock_handler)
+    api = ApiPlataforma(base_url="http://teste-nonglink/api/v1", transport=transport)
+
+    # 1ª chamada: vai à API
+    res1 = api.obter_estudo_campo("Lavra Principal", forcar_nova_analise=False, token="tok-123")
+    assert res1["status"] == "executed"
+    assert res1["em_cache_24h"] is False
+    assert res1["ndvi_mean"] == 0.58
+    assert res1["cloud_cover_pct"] == 5.2
+    assert "agrilink.store" not in res1["aviso_leitura"]
+
+    # 2ª chamada: usa cache de 24h sem novo request a /latest
+    res2 = api.obter_estudo_campo("Lavra Principal", forcar_nova_analise=False, token="tok-123")
+    assert res2["status"] == "executed"
+    assert res2["em_cache_24h"] is True
+    assert calls_made.count("/api/v1/soil/10/latest") == 1
+
+
+def test_estudo_campo_analyze_post_mock():
+    """Garante que forcar_nova_analise faz POST /soil/{farm_id}/analyze sem polígono no corpo."""
+    requests_received = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        requests_received.append(request)
+        if request.url.path == "/api/v1/farms/mine":
+            return httpx.Response(200, json=[{"id": 10, "name": "Lavra Principal"}])
+        if request.url.path == "/api/v1/soil/10/analyze" and request.method == "POST":
+            # Corpo não deve ter coordenadas nem polígonos enviados pelo chat
+            body = json.loads(request.content.decode("utf-8") or "{}")
+            assert "coordinates" not in body
+            return httpx.Response(201, json={
+                "farm_id": 10,
+                "acquisition_date": "2026-11-02",
+                "cloud_cover_pct": 3.0,
+                "ndvi_mean": 0.62,
+                "ndmi_mean": 0.20,
+                "ndti_mean": 0.05,
+                "salinity_index_mean": 0.06,
+                "recommendations": {"irrigacao": "Irrigar conforme planeado."},
+            })
+        return httpx.Response(404, json={})
+
+    transport = httpx.MockTransport(mock_handler)
+    api = ApiPlataforma(base_url="http://teste-nonglink/api/v1", transport=transport)
+
+    res = api.obter_estudo_campo("Lavra Principal", forcar_nova_analise=True, token="tok-123", user={"id": 5})
+    assert res["status"] == "executed"
+    assert res["nova_analise"] is True
+    assert res["ndvi_mean"] == 0.62
+
+
+def test_estudo_campo_erro_400_sem_poligono():
+    """Garante que o erro 400 (sem polígono) orienta a desenhar em agrilink.store."""
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/farms/mine":
+            return httpx.Response(200, json=[{"id": 10, "name": "Lavra Sem Limite"}])
+        if request.url.path == "/api/v1/soil/10/analyze":
+            return httpx.Response(400, json={"detail": "Esta lavra ainda não tem um polígono desenhado."})
+        return httpx.Response(404, json={})
+
+    transport = httpx.MockTransport(mock_handler)
+    api = ApiPlataforma(base_url="http://teste-nonglink/api/v1", transport=transport)
+
+    res = api.obter_estudo_campo("Lavra Sem Limite", forcar_nova_analise=True, token="tok-123", user={"id": 5})
+    assert res["status"] == "sem_poligono"
+    assert "agrilink.store" in res["mensagem"]
+
+
+def test_estudo_campo_limite_diario_quota(monkeypatch):
+    """Garante que SOLO_MAX_POR_UTILIZADOR_DIA é respeitado."""
+    monkeypatch.setenv("SOLO_MAX_POR_UTILIZADOR_DIA", "2")
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/farms/mine":
+            return httpx.Response(200, json=[{"id": 10, "name": "Lavra Quota"}])
+        if request.url.path == "/api/v1/soil/10/analyze":
+            return httpx.Response(201, json={"farm_id": 10, "acquisition_date": "2026-11-03", "ndvi_mean": 0.5})
+        return httpx.Response(404, json={})
+
+    transport = httpx.MockTransport(mock_handler)
+    api = ApiPlataforma(base_url="http://teste-nonglink/api/v1", transport=transport)
+
+    # 1ª e 2ª análises são aceites
+    res1 = api.obter_estudo_campo("Lavra Quota", forcar_nova_analise=True, token="tok", user={"id": "usr-1"})
+    assert res1["status"] == "executed"
+    res2 = api.obter_estudo_campo("Lavra Quota", forcar_nova_analise=True, token="tok", user={"id": "usr-1"})
+    assert res2["status"] == "executed"
+
+    # 3ª análise é barrada pela quota diária
+    res3 = api.obter_estudo_campo("Lavra Quota", forcar_nova_analise=True, token="tok", user={"id": "usr-1"})
+    assert res3["status"] == "quota_excedida"
+    assert "limite diário" in res3["mensagem"]
+
+
+def test_vendas_endpoints_somente_leitura():
+    """Garante leitura de vendas, resumo e tendências via GET."""
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/orders/sales":
+            return httpx.Response(200, json=[
+                {"order_id": 100, "product_name": "Tomate", "quantity": 10.0, "unit_price": 2000.0}
+            ])
+        if request.url.path == "/api/v1/orders/sales/summary":
+            return httpx.Response(200, json={
+                "gross_sales": 20000.0,
+                "net_earnings": 19000.0,
+                "platform_fee": 1000.0,
+            })
+        if request.url.path == "/api/v1/orders/sales/trends":
+            return httpx.Response(200, json=[{"date": "2026-11-01", "value": 20000.0}])
+        return httpx.Response(404, json={})
+
+    transport = httpx.MockTransport(mock_handler)
+    api = ApiPlataforma(base_url="http://teste-nonglink/api/v1", transport=transport)
+
+    vendas = api.listar_vendas("tok-vendas")
+    assert len(vendas) == 1
+    assert vendas[0]["product_name"] == "Tomate"
+
+    resumo = api.obter_resumo_vendas("tok-vendas")
+    assert resumo["gross_sales"] == 20000.0
+    assert resumo["net_earnings"] == 19000.0
+
+    trends = api.obter_tendencias_vendas("tok-vendas")
+    assert len(trends) == 1
+
+
+def test_actualizar_e_retirar_anuncio_nunca_chama_delete():
+    """Garante que actualizar_anuncio e retirar_anuncio usam PATCH e NUNCA chamam DELETE."""
+    all_methods_used = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        all_methods_used.append(request.method)
+        if request.url.path == "/api/v1/products/mine":
+            return httpx.Response(200, json=[{"id": 44, "name": "Tomate Rama", "price_per_unit": 2000.0, "quantity_available": 150.0}])
+        if request.url.path == "/api/v1/products/44" and request.method == "PATCH":
+            body = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(200, json={"id": 44, "name": "Tomate Rama", **body})
+        return httpx.Response(404, json={})
+
+    transport = httpx.MockTransport(mock_handler)
+    api = ApiPlataforma(base_url="http://teste-nonglink/api/v1", transport=transport)
+
+    # 1. Actualizar anúncio confirmado
+    res_up = api.actualizar_anuncio("Tomate Rama", preco_kz_kg=2200.0, quantidade_kg=120.0, confirmed=True, token="tok")
+    assert res_up["status"] == "executed"
+    assert res_up["preco_kz_kg"] == 2200.0
+
+    # 2. Retirar anúncio não confirmado (talão)
+    res_ret_pend = api.retirar_anuncio("Tomate Rama", confirmed=False, token="tok")
+    assert res_ret_pend["status"] == "cancelled_by_user"
+    assert "não será apagado" in str(res_ret_pend["mensagem"])
+
+    # 3. Retirar anúncio confirmado
+    res_ret = api.retirar_anuncio("Tomate Rama", confirmed=True, token="tok")
+    assert res_ret["status"] == "executed"
+    assert res_ret["quantidade_disponivel"] == 0.0
+
+    # Certificação de segurança: NENHUM método DELETE foi chamado
+    assert "DELETE" not in all_methods_used
+    assert "PATCH" in all_methods_used
+
+
+def test_recusa_recursos_outro_utilizador_404():
+    """Garante tratamento correto e seguro quando o recurso pertence a outro utilizador (404)."""
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/products/mine":
+            return httpx.Response(200, json=[])
+        if request.url.path == "/api/v1/farms/mine":
+            return httpx.Response(200, json=[])
+        if "/cancel" in request.url.path:
+            return httpx.Response(404, json={"detail": "Rega não encontrada"})
+        return httpx.Response(404, json={"detail": "Recurso não encontrado"})
+
+    transport = httpx.MockTransport(mock_handler)
+    api = ApiPlataforma(base_url="http://teste-nonglink/api/v1", transport=transport)
+
+    # Parcela de outro utilizador (não está nas minhas parcelas)
+    res_solo = api.obter_estudo_campo("Parcela Alheia", forcar_nova_analise=False, token="tok")
+    assert res_solo["status"] == "sem_parcelas"
+
+    # Produto de outro utilizador
+    res_prod = api.retirar_anuncio("Produto Alheio", confirmed=True, token="tok")
+    assert res_prod["status"] == "sem_produtos"
+
+    # Rega de outro utilizador
+    res_rega = api.cancelar_rega("999", user={"id": 1}, token="tok")
+    assert res_rega["status"] == "error"
+    assert "outro utilizador" in res_rega["message"]
+
+
+# ---------------------------------------------------------------------------
 # 13. Teste de Integração Real (Opcional, desativado por omissão)
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(

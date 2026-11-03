@@ -16,7 +16,10 @@ export default function ModalAuth() {
     login,
     register,
     loginWithDemo,
+    appConfig,
   } = useApp();
+
+  const isApiMode = appConfig?.modo === "api";
 
   const [nome, setNome] = useState("");
   const [email, setEmail] = useState("");
@@ -31,7 +34,7 @@ export default function ModalAuth() {
   // Se já há utilizador autenticado, o ecrã de entrada não é apresentado
   if (user) return null;
 
-  const isSignup = authModalMode === "signup";
+  const isSignup = !isApiMode && authModalMode === "signup";
 
   const languages = [
     { code: "pt", label: "PT" },
@@ -133,35 +136,61 @@ export default function ModalAuth() {
           </div>
         </div>
 
-        {/* Aviso de demonstração visível */}
-        <div className="mb-4 rounded-item border border-accent/25 bg-accent/5 p-3 text-xs leading-relaxed text-text">
-          <p className="font-medium text-text">{t.demoNotice}</p>
+        {/* Aviso de demonstração visível em PT, FR e EN */}
+        <div className="mb-4 space-y-2 rounded-item border border-accent/25 bg-accent/5 p-3 text-xs leading-relaxed text-text">
+          <p className="font-medium text-text">
+            <strong className="text-accent">PT:</strong> Demonstração do hackathon. Não envie dados pessoais reais. Textos, vozes e fotos são processados por modelos da Meta. Os dados de convidados são apagados após 24 horas.
+          </p>
+          <p className="text-text-secondary text-[11.5px]">
+            <strong>FR:</strong> Démonstration du hackathon. N&apos;envoyez pas de données personnelles réelles. Les textes, voix et photos sont traités par des modèles de Meta. Les données des invités sont supprimées après 24 heures.
+          </p>
+          <p className="text-text-secondary text-[11.5px]">
+            <strong>EN:</strong> Hackathon demo. Do not send real personal data. Texts, voices, and photos are processed by Meta models. Guest data is deleted after 24 hours.
+          </p>
         </div>
 
-        {/* Mode Tabs: Login vs Sign in (Register) */}
-        <div className="mb-5 grid grid-cols-2 gap-1 rounded-item bg-sidebar p-1">
-          <button
-            type="button"
-            onClick={() => setAuthModalMode("login")}
-            className={`rounded-item py-2 text-xs font-semibold transition-ui ${
-              !isSignup
-                ? "bg-surface text-text shadow-sm"
-                : "text-text-secondary hover:text-text"
-            }`}
-          >
-            {t.login}
-          </button>
-          <button
-            type="button"
-            onClick={() => setAuthModalMode("signup")}
-            className={`rounded-item py-2 text-xs font-semibold transition-ui ${
-              isSignup
-                ? "bg-surface text-text shadow-sm"
-                : "text-text-secondary hover:text-text"
-            }`}
-          >
-            {t.signIn}
-          </button>
+        {/* Mode Tabs: Login vs Sign in / Registar em agrilink.store */}
+        <div className="mb-5">
+          <div className="grid grid-cols-2 gap-1 rounded-item bg-sidebar p-1">
+            <button
+              type="button"
+              onClick={() => setAuthModalMode("login")}
+              className={`rounded-item py-2 text-xs font-semibold transition-ui ${
+                !isSignup
+                  ? "bg-surface text-text shadow-sm"
+                  : "text-text-secondary hover:text-text"
+              }`}
+            >
+              {t.login}
+            </button>
+            {isApiMode ? (
+              <a
+                href={appConfig?.registo_url || "https://agrilink.store/registar"}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center rounded-item py-2 text-xs font-semibold text-accent hover:text-accent-hover transition-ui"
+              >
+                Criar conta ↗
+              </a>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setAuthModalMode("signup")}
+                className={`rounded-item py-2 text-xs font-semibold transition-ui ${
+                  isSignup
+                    ? "bg-surface text-text shadow-sm"
+                    : "text-text-secondary hover:text-text"
+                }`}
+              >
+                {t.signIn}
+              </button>
+            )}
+          </div>
+          {isApiMode && (
+            <p className="mt-2 text-center text-xs text-text-secondary">
+              Depois de criar a conta, volte aqui e entre.
+            </p>
+          )}
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3.5">
@@ -183,14 +212,14 @@ export default function ModalAuth() {
 
           <div>
             <label className="mb-1 block text-xs font-medium text-text-secondary">
-              {t.authEmailLabel}
+              {isApiMode ? "Email ou Telefone" : t.authEmailLabel}
             </label>
             <input
-              type="email"
+              type={isApiMode ? "text" : "email"}
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder={t.authEmailPlaceholder}
+              placeholder={isApiMode ? "ex: 923456789 ou agricultor@exemplo.com" : t.authEmailPlaceholder}
               className="w-full rounded-item border border-border bg-bg px-3 py-2 text-sm text-text placeholder:text-text-secondary focus:border-accent focus:outline-none"
             />
           </div>
@@ -212,7 +241,9 @@ export default function ModalAuth() {
           </div>
 
           {!isSignup && (
-            <p className="text-xs text-text-secondary">{t.authDemoHint}</p>
+            <p className="text-xs text-text-secondary">
+              {isApiMode ? "Utilize a sua conta do NongLink para aceder às suas parcelas e vendas." : t.authDemoHint}
+            </p>
           )}
 
           {erro && (
@@ -234,16 +265,19 @@ export default function ModalAuth() {
           </button>
         </form>
 
-        <div className="my-4 border-t border-border" />
-
-        <button
-          type="button"
-          onClick={handleDemo}
-          disabled={submitting}
-          className="w-full rounded-item border border-border bg-bg px-4 py-2 text-xs font-medium text-text hover:bg-sidebar-hover transition-ui"
-        >
-          {t.useDemoAccount}
-        </button>
+        {!isApiMode && (
+          <>
+            <div className="my-4 border-t border-border" />
+            <button
+              type="button"
+              onClick={handleDemo}
+              disabled={submitting}
+              className="w-full rounded-item border border-border bg-bg px-4 py-2 text-xs font-medium text-text hover:bg-sidebar-hover transition-ui"
+            >
+              {t.useDemoAccount}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

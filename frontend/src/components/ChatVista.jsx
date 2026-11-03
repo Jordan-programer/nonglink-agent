@@ -525,14 +525,31 @@ export default function ChatVista({ conversationId = null }) {
             className="w-full flex-1 overflow-y-auto px-4 pt-6 pb-4"
           >
             <div className="mx-auto flex w-full max-w-[760px] flex-col gap-6">
-              {mensagens.map((msg) => (
-                <Mensagem
-                  key={msg.id}
-                  mensagem={msg}
-                  onConfirmAction={(confirmar) =>
-                    handleConfirmAction(confirmar, msg.id)
-                  }
-                />
+              {mensagens.map((msg, idx) => (
+                <React.Fragment key={msg.id}>
+                  {idx === 0 && (
+                    <div className="rounded-item border border-accent/25 bg-accent/5 p-3.5 text-xs leading-relaxed text-text space-y-1.5 shadow-soft">
+                      <div className="flex items-center gap-1.5 font-semibold text-accent text-[11px] uppercase tracking-wide">
+                        <span>⚠️ Demonstração do Hackathon</span>
+                      </div>
+                      <p className="font-medium text-text">
+                        <strong className="text-accent">PT:</strong> Demonstração do hackathon. Não envie dados pessoais reais. Textos, vozes e fotos são processados por modelos da Meta. Os dados de convidados são apagados após 24 horas.
+                      </p>
+                      <p className="text-text-secondary text-[11px]">
+                        <strong>FR:</strong> Démonstration du hackathon. N&apos;envoyez pas de données personnelles réelles. Les textes, voix et photos sont traités par des modèles de Meta. Les données des invités sont supprimées après 24 heures.
+                      </p>
+                      <p className="text-text-secondary text-[11px]">
+                        <strong>EN:</strong> Hackathon demo. Do not send real personal data. Texts, voices, and photos are processed by Meta models. Guest data is deleted after 24 hours.
+                      </p>
+                    </div>
+                  )}
+                  <Mensagem
+                    mensagem={msg}
+                    onConfirmAction={(confirmar) =>
+                      handleConfirmAction(confirmar, msg.id)
+                    }
+                  />
+                </React.Fragment>
               ))}
 
               {/* Agent loading indicator: three pulsing dots + "A calcular…" */}
