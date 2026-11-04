@@ -89,7 +89,7 @@ function drawBoxesOnCanvas(canvas, img, boxes) {
       ? getComputedStyle(document.documentElement)
       : null;
   const accentColor =
-    rootStyles?.getPropertyValue("--color-accent")?.trim() || "#C2603C";
+    rootStyles?.getPropertyValue("--color-accent")?.trim() || "#347d31";
 
   // Scale 2px relative to display size so line stays a crisp 2px on screen
   const displayW = canvas.clientWidth || 320;

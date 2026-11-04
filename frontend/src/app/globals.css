@@ -5,63 +5,63 @@
 @tailwind utilities;
 
 :root {
-  --color-bg: #FAF9F5;
-  --color-sidebar: #F0EEE6;
-  --color-sidebar-hover: #E6E3D8;
-  --color-sidebar-active: #DFDCD0;
-  --color-surface: #FFFFFF;
-  --color-user-block: #EDEAE0;
-  --color-text: #1F1E1D;
-  --color-text-secondary: #6B6A63;
-  --color-border: #E3E0D5;
-  --color-accent: #C2603C;
-  --color-accent-hover: #AD522F;
-  --color-success: #2D6A3E;
-  --color-error: #B3261E;
-  --shadow-soft: 0 2px 12px rgba(31, 30, 29, 0.06);
-  --shadow-menu: 0 6px 20px rgba(31, 30, 29, 0.12);
+  --color-bg: #fffdf8;
+  --color-sidebar: #f7fbf6;
+  --color-sidebar-hover: #e0f3de;
+  --color-sidebar-active: #c1e6bd;
+  --color-surface: #ffffff;
+  --color-user-block: #e0f3de;
+  --color-text: #0f2411;
+  --color-text-secondary: #2b632a;
+  --color-border: #e0f3de;
+  --color-accent: #347d31;
+  --color-accent-hover: #2b632a;
+  --color-success: #347d31;
+  --color-error: #b3261e;
+  --shadow-soft: 0 2px 12px rgba(15, 36, 17, 0.06);
+  --shadow-menu: 0 6px 20px rgba(15, 36, 17, 0.12);
 
-  --font-sans: 'Instrument Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-sans: 'Inter', 'Instrument Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-serif: 'Newsreader', Georgia, Cambria, 'Times New Roman', Times, serif;
   --font-stencil: 'Big Shoulders Stencil Display', Impact, 'Arial Narrow', sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --color-bg: #262624;
-    --color-sidebar: #1F1E1D;
-    --color-sidebar-hover: #2B2A28;
-    --color-sidebar-active: #333230;
-    --color-surface: #30302E;
-    --color-user-block: #3A3937;
-    --color-text: #F2F1EC;
-    --color-text-secondary: #A6A49A;
-    --color-border: #3F3E3B;
-    --color-accent: #D97B57;
-    --color-accent-hover: #C46845;
-    --color-success: #5FB07A;
-    --color-error: #E5736A;
-    --shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.28);
-    --shadow-menu: 0 6px 24px rgba(0, 0, 0, 0.45);
+    --color-bg: #0d1e10;
+    --color-sidebar: #09170b;
+    --color-sidebar-hover: #142e16;
+    --color-sidebar-active: #1f4221;
+    --color-surface: #122915;
+    --color-user-block: #1a3c1e;
+    --color-text: #f2faf1;
+    --color-text-secondary: #97d391;
+    --color-border: #1f4221;
+    --color-accent: #479b41;
+    --color-accent-hover: #69b862;
+    --color-success: #479b41;
+    --color-error: #e5736a;
+    --shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.35);
+    --shadow-menu: 0 6px 24px rgba(0, 0, 0, 0.55);
   }
 }
 
 :root[data-theme="dark"] {
-  --color-bg: #262624;
-  --color-sidebar: #1F1E1D;
-  --color-sidebar-hover: #2B2A28;
-  --color-sidebar-active: #333230;
-  --color-surface: #30302E;
-  --color-user-block: #3A3937;
-  --color-text: #F2F1EC;
-  --color-text-secondary: #A6A49A;
-  --color-border: #3F3E3B;
-  --color-accent: #D97B57;
-  --color-accent-hover: #C46845;
-  --color-success: #5FB07A;
-  --color-error: #E5736A;
-  --shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.28);
-  --shadow-menu: 0 6px 24px rgba(0, 0, 0, 0.45);
+  --color-bg: #0d1e10;
+  --color-sidebar: #09170b;
+  --color-sidebar-hover: #142e16;
+  --color-sidebar-active: #1f4221;
+  --color-surface: #122915;
+  --color-user-block: #1a3c1e;
+  --color-text: #f2faf1;
+  --color-text-secondary: #97d391;
+  --color-border: #1f4221;
+  --color-accent: #479b41;
+  --color-accent-hover: #69b862;
+  --color-success: #479b41;
+  --color-error: #e5736a;
+  --shadow-soft: 0 2px 12px rgba(0, 0, 0, 0.35);
+  --shadow-menu: 0 6px 24px rgba(0, 0, 0, 0.55);
 }
 
 * {
