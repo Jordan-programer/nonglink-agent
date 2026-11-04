@@ -4,7 +4,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     image: nonglink-agent-backend:latest
-    container_name: nonglink-backend
+    container_name: nonglink-agent-backend
     restart: unless-stopped
     env_file:
       - path: .env
@@ -16,7 +16,7 @@ services:
     volumes:
       - nonglink_data:/data
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8200:8000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/health"]
       interval: 10s
@@ -29,9 +29,9 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+        - NEXT_PUBLIC_API_URL=https://agent.agrilink.store
     image: nonglink-agent-frontend:latest
-    container_name: nonglink-frontend
+    container_name: nonglink-agent-frontend
     restart: unless-stopped
     env_file:
       - path: .env
@@ -40,7 +40,7 @@ services:
       - PORT=3000
       - HOSTNAME=0.0.0.0
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3200:3000"
     depends_on:
       backend:
         condition: service_healthy
