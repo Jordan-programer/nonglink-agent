@@ -376,17 +376,26 @@ class ApiPlataforma(Plataforma):
 
         if resp.status_code == 200:
             data = resp.json()
-            sug_price = float(data.get("suggested_price") or 0.0)
-            min_price = float(data.get("min_price") or 0.0)
-            max_price = float(data.get("max_price") or 0.0)
+            is_insufficient = data.get("status") == "insufficient_data"
+            sug_price = float(data.get("suggested_price") or data.get("base_price") or 0.0)
+            min_price = float(data.get("min_price") or data.get("range_low") or 0.0)
+            max_price = float(data.get("max_price") or data.get("range_high") or 0.0)
             conf = float(data.get("confidence") or 0.0)
             conf_pct = round(conf * 100, 1)
-            reasoning = str(data.get("reasoning") or "Estimativa baseada nos dados de mercado recentes.")
+            reasoning = str(
+                data.get("reasoning")
+                or data.get("note")
+                or ("Sem histórico suficiente de mercado para calcular intervalo preditivo." if is_insufficient else "Estimativa baseada nos dados de mercado recentes.")
+            )
             unidade = crop.get("default_unit", "kg")
 
             nota = (
-                f"referência indicativa NongLink (sugerido: {sug_price:.0f} Kz/{unidade}, "
-                f"intervalo: {min_price:.0f} a {max_price:.0f} Kz/{unidade}, confiança: {conf_pct}%)"
+                f"referência indicativa NongLink ({reasoning})"
+                if is_insufficient or sug_price <= 0
+                else (
+                    f"referência indicativa NongLink (sugerido: {sug_price:.0f} Kz/{unidade}, "
+                    f"intervalo: {min_price:.0f} a {max_price:.0f} Kz/{unidade}, confiança: {conf_pct}%)"
+                )
             )
 
             return {
@@ -403,10 +412,15 @@ class ApiPlataforma(Plataforma):
                 "unidade": f"Kz/{unidade}",
                 "tipo": "indicativo",
                 "nota": nota,
+                "sem_historico": is_insufficient or (min_price <= 0 and max_price <= 0),
                 "mensagem": (
-                    f"Preço indicativo sugerido: {sug_price:.0f} Kz/{unidade} "
-                    f"(intervalo de {min_price:.0f} a {max_price:.0f} Kz/{unidade}, confiança {conf_pct}%). "
-                    f"Justificação: {reasoning}"
+                    f"Cultura '{cultura}': {reasoning}"
+                    if is_insufficient or sug_price <= 0
+                    else (
+                        f"Preço indicativo sugerido: {sug_price:.0f} Kz/{unidade} "
+                        f"(intervalo de {min_price:.0f} a {max_price:.0f} Kz/{unidade}, confiança {conf_pct}%). "
+                        f"Justificação: {reasoning}"
+                    )
                 ),
             }
 
@@ -434,9 +448,16 @@ class ApiPlataforma(Plataforma):
         p_min = float(cotacao.get("preco_min") or 0.0)
         p_max = float(cotacao.get("preco_max") or 0.0)
         if p_min <= 0 or p_max <= 0:
+            if preco_kz_kg > 0:
+                # Sem histórico preditivo suficiente no mercado; aceita o preço definido pelo agricultor
+                return (
+                    True,
+                    "Preço aceite: sem cotação preditiva estatística disponível na plataforma para esta região.",
+                    cotacao,
+                )
             return (
                 False,
-                "Os preços de referência devolvidos pela API oficial são inválidos. O anúncio não será proposto.",
+                "O preço por quilograma deve ser superior a zero.",
                 None,
             )
 
