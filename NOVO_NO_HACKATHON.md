@@ -218,3 +218,21 @@ Implementação da camada de integração com a API REST oficial do NongLink (`/
 6. **Suporte para Variáveis de Produção:**
    - `ALLOWED_CORS_ORIGINS` (lista explícita sem `*`);
    - `ENABLE_DOCS=0` (desativação de `/docs`, `/redoc` e `/openapi.json` com retorno 404).
+
+### N. Endurecimento para Produção e Unificação Visual (`agent.agrilink.store`)
+
+1. **Endpoint e Contrato de Histórico de Solo (`obter_historico_solo`):**
+   - Implementado método `obter_historico_solo` na classe `ApiPlataforma` e na interface `Plataforma`, consumindo `GET /soil/{farm_id}/history` com Bearer token e resolução resiliente de parcelas;
+   - Cobertura completa com testes unitários `MockTransport` e paridade na sandbox.
+2. **Sanitização de Respostas e Supressão de Vazamento de Segredos (Regra 4):**
+   - Criação da função determinística `_extrair_detalhe_seguro`, que bloqueia mensagens com URLs, chaves, senhas ou tokens e suprime stack traces de servidores 5xx;
+   - Substituição de mensagens cruas em endpoints de autenticação por mensagens genéricas seguras;
+   - Chave de quota diária de satélite indexada estritamente por ID numérico do agricultor (`user_id`).
+3. **Script e Teste Real de Integração Ponta a Ponta (`backend/scripts/teste_real_nonglink.py`):**
+   - Execução do fluxo de 10 etapas do contrato REST da plataforma com resumo seguro (`[OK]`, `[FALHOU]`, `[IGNORADO]`) sem expor credenciais na consola ou nos logs;
+   - Teste no Pytest marcado com `@pytest.mark.skipif(TEST_REAL_NONGLINK != "1")`.
+4. **Unificação Visual e Identidade do Ecossistema NongLink:**
+   - Paleta de cores unificada com a plataforma principal (`agrilink.store`): verde folha agrícola (`#347d31`), fundo creme suave (`#fffdf8`), texto de alto contraste (`#0f2411`) e bordas neutras;
+   - Componentes visuais padronizados (ecrã de entrada, barra lateral, talões de confirmação e tabelas).
+5. **Documentação Operacional de Produção (`docs/PRODUCAO.md`):**
+   - Guia completo cobrindo a arquitectura, mapeamento de portas na VPS (frontend 3200, backend 8200), blocos de reverse proxy Caddy e as 11 regras operacionais.

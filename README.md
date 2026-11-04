@@ -122,9 +122,18 @@ cd ~\nonglink-agent\backend
 
 # 7. Integração com a API REST do NongLink (MockTransport sem rede real)
 ..\.venv\Scripts\python.exe -m pytest tests\test_integracao_api.py -v
+
+# 8. Teste de Integração Real contra o NongLink (Requer TEST_REAL_NONGLINK=1)
+$env:TEST_REAL_NONGLINK="1"
+$env:NONGLINK_API_URL="https://agrilink.store/api/v1"
+$env:TESTE_EMAIL="meta@test.com"
+$env:TESTE_SENHA="sua_senha"
+..\.venv\Scripts\python.exe scripts\teste_real_nonglink.py
 ```
 
-Os testes 4, 5 e 6 usam uma base de dados temporária `backend/nonglink_test.db`, que é apagada no fim, e não precisam da `MODEL_API_KEY`. O teste 7 valida exaustivamente os 25 cenários de integração da API REST (incluindo Google Earth Engine, quotas, gestão de anúncios sem DELETE, vendas apenas de leitura e reconciliação) sem necessidade de rede real.
+Os testes 4, 5 e 6 usam uma base de dados temporária `backend/nonglink_test.db`, que é apagada no fim, e não precisam da `MODEL_API_KEY`. O teste 7 valida exaustivamente os cenários de integração da API REST (incluindo Google Earth Engine, quotas, gestão de anúncios sem DELETE, vendas apenas de leitura, histórico de solo e reconciliação) sem necessidade de rede real. O teste 8 valida o fluxo completo contra a API ao vivo.
+
+Para instruções completas de implantação em produção sob `agent.agrilink.store`, consulte o documento [docs/PRODUCAO.md](docs/PRODUCAO.md).
 
 ---
 

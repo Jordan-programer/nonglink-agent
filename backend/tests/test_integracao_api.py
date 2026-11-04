@@ -955,18 +955,21 @@ def test_sanitizacao_erros_sem_vazar_pii():
 
 
 # ---------------------------------------------------------------------------
-# 14. Teste de Integração Real (Opcional, desativado por omissão)
+# 14. Teste de Integração Real (Opcional, ativado apenas quando TEST_REAL_NONGLINK=1)
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(
     os.environ.get("TEST_REAL_NONGLINK") != "1",
-    reason="Requer TEST_REAL_NONGLINK=1 e instância ativa do backend NongLink em http://localhost:8000/api/v1",
+    reason="Requer TEST_REAL_NONGLINK=1 e variáveis TESTE_EMAIL e TESTE_SENHA definidas",
 )
 def test_integracao_real_nonglink_local():
-    """Teste de integração ponta a ponta contra o backend do NongLink real local."""
-    api_url = os.environ.get("NONGLINK_API_URL", "http://localhost:8000/api/v1")
-    api = ApiPlataforma(base_url=api_url)
+    """Teste de integração ponta a ponta contra a API real do NongLink."""
+    from scripts.teste_real_nonglink import executar_fluxo_real
 
-    # 1. Consulta culturas públicas
-    culturas = api._obter_culturas()
-    assert isinstance(culturas, list)
-    assert len(culturas) > 0
+    api_url = os.environ.get("NONGLINK_API_URL", "https://agrilink.store/api/v1")
+    email = os.environ.get("TESTE_EMAIL", "meta@test.com")
+    senha = os.environ.get("TESTE_SENHA", "meta@123")
+
+    sucesso, relatorio = executar_fluxo_real(api_url=api_url, email=email, senha=senha)
+    for linha in relatorio:
+        print(linha)
+    assert sucesso, f"Falha no fluxo de integracao real com NongLink: {relatorio}"
