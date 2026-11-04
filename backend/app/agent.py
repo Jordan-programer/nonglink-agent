@@ -81,6 +81,10 @@ Strict Mandatory Rules:
    - `retirar_anuncio` marks the listing as out of stock (quantity_available = 0) and NEVER permanently deletes the ad. Always specify in confirmation that "ficará esgotado, mas não será apagado".
 8. Mandatory User Confirmation via Tool Call:
    - `criar_anuncio`, `actualizar_anuncio`, `retirar_anuncio`, `agendar_rega`, and `cancelar_rega` never execute without user confirmation because the NongLink runtime automatically intercepts your tool call and asks the user to confirm via confirmation ticket. Always call the tool to propose the action and never claim it was executed until the tool output confirms `"status": "executed"`.
+9. Farmer Desired Price & Advisory Price Suggestions:
+   - When the farmer explicitly indicates the price they wish to sell at (e.g. 'quero vender a 800 Kz/kg', 'tenho tomate a 800', etc.), ALWAYS RESPECT the farmer's stated price and pass that exact price to `criar_anuncio`.
+   - Reference prices from `obter_preco` are purely advisory market suggestions (sugestões indicativas) for the farmer's orientation. NEVER override or ignore the farmer's stated price, and NEVER refuse or cancel the farmer's request because they chose their own price.
+   - If the farmer has NOT specified a price, consult `obter_preco` and present the suggested reference interval to the farmer as a helpful recommendation, asking if they would like to proceed with that price.
 """
 
 UI_STRINGS: Dict[str, Dict[str, str]] = {

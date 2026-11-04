@@ -380,7 +380,21 @@ class ApiPlataforma(Plataforma):
             sug_price = float(data.get("suggested_price") or data.get("base_price") or 0.0)
             min_price = float(data.get("min_price") or data.get("range_low") or 0.0)
             max_price = float(data.get("max_price") or data.get("range_high") or 0.0)
-            conf = float(data.get("confidence") or 0.0)
+            raw_conf = data.get("confidence")
+            if isinstance(raw_conf, (int, float)):
+                conf = float(raw_conf)
+            else:
+                conf_str = str(raw_conf or "").lower().strip()
+                conf_map = {
+                    "alta": 0.85,
+                    "high": 0.85,
+                    "media": 0.60,
+                    "média": 0.60,
+                    "medium": 0.60,
+                    "baixa": 0.35,
+                    "low": 0.35,
+                }
+                conf = conf_map.get(conf_str, 0.50 if raw_conf else 0.0)
             conf_pct = round(conf * 100, 1)
             reasoning = str(
                 data.get("reasoning")

@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from app.db import CROP_CANONICAL_MAP, get_crop_price_from_db
 
 DEFAULT_MAX_QUANTIDADE_KG = 10000.0
-DEFAULT_MARGEM_PRECO_PERCENTAGEM = 25.0
+DEFAULT_MARGEM_PRECO_PERCENTAGEM = 50.0
 
 
 def obter_max_quantidade_kg() -> float:
@@ -58,6 +58,33 @@ def validar_cultura(cultura: str) -> Tuple[bool, str]:
         )
     db_price = get_crop_price_from_db(canon)
     if db_price is None:
+        try:
+            from app.integracao.fabrica import obter_plataforma
+            from app.db import upsert_crop_price
+            plat = obter_plataforma()
+            res = plat.obter_preco(canon)
+            if res.get("status") == "executed":
+                p_min = float(res.get("preco_min") or res.get("preco_sugerido") or 0.0)
+                p_max = float(res.get("preco_max") or res.get("preco_sugerido") or 0.0)
+                if p_min > 0 or p_max > 0:
+                    try:
+                        from datetime import datetime
+                        upsert_crop_price(
+                            cultura=canon,
+                            preco_min=p_min,
+                            preco_max=p_max,
+                            tipo=res.get("tipo", "indicativo"),
+                            unidade=res.get("unidade", "kz/kg"),
+                            local=str(res.get("region_id", "Luanda")),
+                            data=datetime.now().strftime("%Y-%m-%d"),
+                            fonte="NongLink API",
+                            observacao=str(res.get("justificacao", "Preço oficial NongLink")),
+                        )
+                    except Exception:
+                        pass
+                    return True, canon
+        except Exception:
+            pass
         return (
             False,
             f"Cultura '{cultura}' não possui preço de referência cadastrado na tabela oficial. Ação recusada.",
@@ -100,6 +127,15 @@ def validar_preco(cultura: str, preco_kz_kg: float) -> Tuple[bool, str]:
 
     db_row = get_crop_price_from_db(canon)
     if db_row is None:
+        try:
+            from app.integracao.fabrica import obter_plataforma
+            plat = obter_plataforma()
+            val_ok, val_msg, _ = plat.validar_preco(canon, preco)
+            if val_ok:
+                return True, ""
+            return False, val_msg
+        except Exception:
+            pass
         return (
             False,
             f"Cultura '{cultura}' não possui preço de referência cadastrado na tabela oficial. Ação recusada.",

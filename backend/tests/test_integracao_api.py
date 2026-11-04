@@ -427,6 +427,29 @@ def test_precos_sugestoes_e_guardas():
     assert ok_baixo is False
     assert "fora do intervalo permitido" in msg_baixo
 
+    # Testar também quando a API devolve confidence como string enum ("alta", "media", "baixa")
+    def mock_handler_enum(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/crops/":
+            return httpx.Response(200, json=[{"id": 1, "name": "Milho", "default_unit": "kg"}])
+        if request.url.path == "/api/v1/market/price-suggestions":
+            return httpx.Response(200, json={
+                "crop_id": 1,
+                "region_id": 1,
+                "suggested_price": 800.0,
+                "range_low": 700.0,
+                "range_high": 900.0,
+                "confidence": "alta",
+                "reasoning": "Preço baseado em dados históricos recentes.",
+            })
+        return httpx.Response(404, json={})
+
+    api_enum = ApiPlataforma(base_url="http://teste-nonglink/api/v1", transport=httpx.MockTransport(mock_handler_enum))
+    cotacao_enum = api_enum.obter_preco("Milho", token="token-teste")
+    assert cotacao_enum["status"] == "executed"
+    assert cotacao_enum["confianca_percentagem"] == 85.0
+    assert cotacao_enum["preco_min"] == 700.0
+    assert cotacao_enum["preco_max"] == 900.0
+
 
 def test_recusa_anuncio_quando_api_falha():
     """Se a API de preços falhar (ex: 500 ou rede), não propõe anúncio."""
