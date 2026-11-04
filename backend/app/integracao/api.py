@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import unicodedata
 from zoneinfo import ZoneInfo
 
+from fastapi import HTTPException
 import httpx
 
 from app.db import CROP_CANONICAL_MAP
@@ -192,17 +193,27 @@ class ApiPlataforma(Plataforma):
         headers = {"Authorization": f"Bearer {cleaned_token}"}
         try:
             resp = self._request_with_retry("GET", "/auth/me", headers=headers)
-        except (httpx.NetworkError, httpx.TimeoutException):
-            return {}
+        except (httpx.NetworkError, httpx.TimeoutException) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Serviço de autenticação do NongLink temporariamente indisponível.",
+            ) from exc
 
         if resp.status_code == 200:
             user = resp.json()
             _AUTH_CACHE[cleaned_token] = (now + AUTH_CACHE_TTL_SECONDS, user)
             return user
-        elif resp.status_code == 401:
+        elif resp.status_code in (500, 502, 503, 504):
+            _AUTH_CACHE.pop(cleaned_token, None)
+            raise HTTPException(
+                status_code=503,
+                detail="Serviço de autenticação do NongLink temporariamente indisponível.",
+            )
+        elif resp.status_code in (401, 403, 404):
             _AUTH_CACHE.pop(cleaned_token, None)
             return {}
 
+        _AUTH_CACHE.pop(cleaned_token, None)
         return {}
 
     def _obter_culturas(self) -> List[Dict[str, Any]]:

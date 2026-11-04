@@ -444,8 +444,8 @@ def utilizador_atual(
             raise
         except Exception as exc:
             raise HTTPException(
-                status_code=401,
-                detail="Sessão inválida ou expirada no NongLink. Inicie sessão novamente.",
+                status_code=503,
+                detail="Serviço de autenticação do NongLink temporariamente indisponível.",
             ) from exc
 
     user = get_user_by_token(token)

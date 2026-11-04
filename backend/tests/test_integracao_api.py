@@ -822,6 +822,69 @@ def test_recusa_recursos_outro_utilizador_404():
     assert "outro utilizador" in res_rega["message"]
 
 
+def test_modo_api_falha_fechada_e_seguranca():
+    """Valida falha fechada em modo API: rejeição de token (401), NongLink indisponível (503/401, nunca 200), demo/registar (403) e /config sem revelar NONGLINK_API_URL."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.integracao.fabrica import definir_plataforma, redefinir_plataforma
+
+    old_modo = os.environ.get("MODO_PLATAFORMA")
+    old_url = os.environ.get("NONGLINK_API_URL")
+    try:
+        os.environ["MODO_PLATAFORMA"] = "api"
+        os.environ["NONGLINK_API_URL"] = "http://mock-nonglink/api/v1"
+
+        client = TestClient(app)
+
+        # 1. Sem token -> 401
+        resp_no_tok = client.get("/conversas")
+        assert resp_no_tok.status_code == 401
+
+        # 2. Token rejeitado pelo NongLink -> 401
+        def handler_rej(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={"detail": "Could not validate credentials"})
+
+        plat_rej = ApiPlataforma(base_url="http://mock-nonglink/api/v1", transport=httpx.MockTransport(handler_rej))
+        definir_plataforma(plat_rej)
+
+        resp_bad_tok = client.get("/conversas", headers={"Authorization": "Bearer token_invalido"})
+        assert resp_bad_tok.status_code == 401
+
+        # 3. NongLink indisponível (503 / falha de rede) -> 503 ou 401 (NUNCA 200)
+        def handler_down(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, json={"detail": "Service Unavailable"})
+
+        plat_down = ApiPlataforma(base_url="http://mock-nonglink/api/v1", transport=httpx.MockTransport(handler_down))
+        definir_plataforma(plat_down)
+
+        resp_down = client.get("/conversas", headers={"Authorization": "Bearer token_qualquer"})
+        assert resp_down.status_code in (401, 503)
+        assert resp_down.status_code != 200
+
+        # 4. /auth/demo e /auth/registar devolvem 403 em modo API
+        resp_demo = client.post("/auth/demo")
+        assert resp_demo.status_code == 403
+        resp_reg = client.post("/auth/registar", json={"nome": "X", "email": "x@x.com", "senha": "password123"})
+        assert resp_reg.status_code == 403
+
+        # 5. /config não revela NONGLINK_API_URL
+        resp_cfg = client.get("/config")
+        assert resp_cfg.status_code == 200
+        cfg_data = resp_cfg.json()
+        assert "NONGLINK_API_URL" not in str(cfg_data)
+        assert "http://mock-nonglink" not in str(cfg_data)
+    finally:
+        if old_modo is not None:
+            os.environ["MODO_PLATAFORMA"] = old_modo
+        else:
+            os.environ.pop("MODO_PLATAFORMA", None)
+        if old_url is not None:
+            os.environ["NONGLINK_API_URL"] = old_url
+        else:
+            os.environ.pop("NONGLINK_API_URL", None)
+        redefinir_plataforma()
+
+
 # ---------------------------------------------------------------------------
 # 13. Teste de Integração Real (Opcional, desativado por omissão)
 # ---------------------------------------------------------------------------

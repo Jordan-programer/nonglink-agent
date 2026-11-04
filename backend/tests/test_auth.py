@@ -59,6 +59,9 @@ from app.db import (  # noqa: E402
     init_db,
 )
 from app.main import app, reset_login_rate_limits  # noqa: E402
+import httpx  # noqa: E402
+from app.integracao.api import ApiPlataforma  # noqa: E402
+from app.integracao.fabrica import definir_plataforma, redefinir_plataforma  # noqa: E402
 
 
 def asgi_request(
@@ -178,7 +181,6 @@ def run_tests() -> int:
         # 1. Sem token, todos os endpoints protegidos devolvem 401 (com e sem X-Require-Auth)
         protected_calls: List[Tuple[str, str, Optional[Any], bytes, Optional[str]]] = [
             ("GET", "/", None, b"", None),
-            ("GET", "/health", None, b"", None),
             ("GET", "/auth/me", None, b"", None),
             ("POST", "/auth/logout", {}, b"", None),
             ("GET", "/conversas", None, b"", None),
@@ -234,6 +236,17 @@ def run_tests() -> int:
             "Endpoints protegidos sem token devolvem 401 (com X-Require-Auth=0/false)",
             all_401_with_x_hdr,
             f"{len(protected_calls)} endpoints verificados",
+        )
+
+        # Endpoints públicos (/health e /config) devolvem 200 sem token
+        code_h, _, _ = asgi_request("GET", "/health")
+        code_cfg, _, b_cfg = asgi_request("GET", "/config")
+        cfg_obj = json.loads(b_cfg.decode("utf-8")) if b_cfg else {}
+        publicos_ok = code_h == 200 and code_cfg == 200 and "modo" in cfg_obj
+        report(
+            "Endpoints públicos (GET /health e GET /config) devolvem 200 sem token",
+            publicos_ok,
+            "health=200, config=200",
         )
 
         # 2. Palavra-passe mínima (8 caracteres), email em minúsculas e PBKDF2 >= 600000 + rehash
@@ -373,6 +386,87 @@ def run_tests() -> int:
             "Nenhum ficheiro de log contém palavras-passe ou tokens",
             no_leaks,
         )
+
+        # 6. Modo API: falha fechada, rejeição de token, indisponibilidade e 403 em registo/demo
+        old_modo = os.environ.get("MODO_PLATAFORMA")
+        old_url = os.environ.get("NONGLINK_API_URL")
+        try:
+            os.environ["MODO_PLATAFORMA"] = "api"
+            os.environ["NONGLINK_API_URL"] = "http://mock-nonglink"
+
+            # Estado 1: NongLink rejeita token (401)
+            def _reject_token_handler(request: httpx.Request) -> httpx.Response:
+                return httpx.Response(401, json={"detail": "Could not validate credentials"})
+
+            mock_plat_reject = ApiPlataforma(
+                base_url="http://mock-nonglink",
+                transport=httpx.MockTransport(_reject_token_handler),
+            )
+            definir_plataforma(mock_plat_reject)
+
+            api_no_token_401 = True
+            api_bad_token_401 = True
+            for m, p, jb, rb, ct in protected_calls:
+                c_no_tok, _, _ = asgi_request(m, p, headers={}, json_body=jb, raw_body=rb, content_type=ct)
+                if c_no_tok != 401:
+                    api_no_token_401 = False
+                c_bad_tok, _, _ = asgi_request(
+                    m, p, headers={"Authorization": "Bearer token_falso"}, json_body=jb, raw_body=rb, content_type=ct
+                )
+                if c_bad_tok != 401:
+                    api_bad_token_401 = False
+
+            # Estado 2: NongLink indisponível (503 ou erro 5xx) -> Falha fechada (503 ou 401, NUNCA 200)
+            def _unavailable_handler(request: httpx.Request) -> httpx.Response:
+                return httpx.Response(503, json={"detail": "Service Unavailable"})
+
+            mock_plat_down = ApiPlataforma(
+                base_url="http://mock-nonglink",
+                transport=httpx.MockTransport(_unavailable_handler),
+            )
+            definir_plataforma(mock_plat_down)
+
+            api_down_closed_failure = True
+            for m, p, jb, rb, ct in protected_calls:
+                c_down, _, _ = asgi_request(
+                    m, p, headers={"Authorization": "Bearer token_qualquer"}, json_body=jb, raw_body=rb, content_type=ct
+                )
+                if c_down == 200 or c_down not in (401, 503):
+                    api_down_closed_failure = False
+
+            # Estado 3: /auth/demo e /auth/registar devolvem 403 em modo api
+            code_demo_api, _, _ = asgi_request("POST", "/auth/demo", json_body={})
+            code_reg_api, _, _ = asgi_request(
+                "POST", "/auth/registar", json_body={"nome": "A", "email": "a@a.com", "senha": "password123"}
+            )
+            demo_reg_403 = code_demo_api == 403 and code_reg_api == 403
+
+            # Estado 4: /config não revela NONGLINK_API_URL
+            code_cfg_api, _, body_cfg_api = asgi_request("GET", "/config")
+            cfg_text = body_cfg_api.decode("utf-8")
+            config_safe = code_cfg_api == 200 and "NONGLINK_API_URL" not in cfg_text and "mock-nonglink" not in cfg_text
+
+            api_mode_all_ok = (
+                api_no_token_401
+                and api_bad_token_401
+                and api_down_closed_failure
+                and demo_reg_403
+                and config_safe
+            )
+            report(
+                "Modo API: sem token (401), token rejeitado (401), NongLink indisponível (503/401 falha fechada), demo/reg (403) e config seguro",
+                api_mode_all_ok,
+            )
+        finally:
+            if old_modo is not None:
+                os.environ["MODO_PLATAFORMA"] = old_modo
+            else:
+                os.environ.pop("MODO_PLATAFORMA", None)
+            if old_url is not None:
+                os.environ["NONGLINK_API_URL"] = old_url
+            else:
+                os.environ.pop("NONGLINK_API_URL", None)
+            redefinir_plataforma()
 
     finally:
         reset_login_rate_limits()
