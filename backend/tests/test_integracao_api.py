@@ -886,7 +886,76 @@ def test_modo_api_falha_fechada_e_seguranca():
 
 
 # ---------------------------------------------------------------------------
-# 13. Teste de Integração Real (Opcional, desativado por omissão)
+# 13. Testes de Histórico de Solo e Sanitização (T2 Correcções)
+# ---------------------------------------------------------------------------
+def test_obter_historico_solo_mock_transport():
+    """Valida consulta de histórico de observações de satélite via GET /soil/{farm_id}/history com MockTransport."""
+    requests_received: List[httpx.Request] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        requests_received.append(request)
+        if request.url.path == "/api/v1/farms/mine":
+            return httpx.Response(200, json=[{"id": 7, "name": "Parcela Sul"}])
+        if request.url.path == "/api/v1/soil/7/history":
+            assert request.headers.get("authorization") == "Bearer token-valido"
+            return httpx.Response(200, json=[
+                {"acquisition_date": "2026-10-20", "ndvi_mean": 0.62, "cloud_cover_pct": 5.0},
+                {"acquisition_date": "2026-10-05", "ndvi_mean": 0.55, "cloud_cover_pct": 10.2},
+            ])
+        return httpx.Response(404, json={})
+
+    transport = httpx.MockTransport(mock_handler)
+    api = ApiPlataforma(base_url="http://teste-nonglink/api/v1", transport=transport)
+
+    res = api.obter_historico_solo(parcela_ref="Parcela Sul", token="token-valido")
+    assert res["status"] == "executed"
+    assert res["farm_id"] == 7
+    assert len(res["historico"]) == 2
+    assert res["historico"][0]["ndvi_mean"] == 0.62
+
+    # Verifica também paridade com SandboxPlataforma
+    sandbox = SandboxPlataforma()
+    sb_res = sandbox.obter_historico_solo("Parcela Sul", token="token-valido")
+    assert sb_res["status"] == "executed"
+    assert isinstance(sb_res["historico"], list)
+
+
+def test_obter_historico_solo_404_mock_transport():
+    """Valida tratamento de erro 404 em histórico de solo."""
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/farms/mine":
+            return httpx.Response(200, json=[{"id": 9, "name": "Parcela Leste"}])
+        if request.url.path == "/api/v1/soil/9/history":
+            return httpx.Response(404, json={"detail": "Nenhum histórico encontrado"})
+        return httpx.Response(404, json={})
+
+    transport = httpx.MockTransport(mock_handler)
+    api = ApiPlataforma(base_url="http://teste-nonglink/api/v1", transport=transport)
+
+    res = api.obter_historico_solo(parcela_ref="Parcela Leste", token="token-valido")
+    assert res["status"] == "not_found"
+    assert "Nenhum histórico" in res["mensagem"]
+
+
+def test_sanitizacao_erros_sem_vazar_pii():
+    """Valida que mensagens de erro não vazam tokens, URLs ou stack traces."""
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        if "/cancel" in request.url.path:
+            return httpx.Response(500, json={"detail": "Internal error at https://secret-cluster/db?key=sec123"})
+        return httpx.Response(500, text="Internal Server Error: database connection timeout")
+
+    transport = httpx.MockTransport(mock_handler)
+    api = ApiPlataforma(base_url="http://teste-nonglink/api/v1", transport=transport)
+
+    res_canc = api.cancelar_rega("99", user={"id": 1}, token="token-valido")
+    assert res_canc["status"] == "error"
+    # Garante que mensagem é sanitizada
+    assert "https://secret-cluster" not in res_canc["message"]
+    assert "sec123" not in res_canc["message"]
+
+
+# ---------------------------------------------------------------------------
+# 14. Teste de Integração Real (Opcional, desativado por omissão)
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(
     os.environ.get("TEST_REAL_NONGLINK") != "1",

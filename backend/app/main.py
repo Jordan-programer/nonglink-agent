@@ -1618,9 +1618,10 @@ def post_auth_login(
             raise
         except Exception as exc:
             _record_login_failure(clean_identifier, client_ip, now)
+            logger.warning("Falha de comunicacao com autenticacao NongLink: %s", type(exc).__name__)
             raise HTTPException(
                 status_code=502,
-                detail=f"Falha de comunicação com o serviço de autenticação NongLink: {str(exc)}",
+                detail="Falha de comunicação com o serviço de autenticação NongLink. Tente novamente mais tarde.",
             ) from exc
 
     clean_email = (payload.email or "").strip().lower()

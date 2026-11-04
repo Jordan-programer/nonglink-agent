@@ -190,6 +190,37 @@ class SandboxPlataforma(Plataforma):
             ),
         }
 
+    def obter_historico_solo(
+        self,
+        parcela_ref: Optional[str],
+        token: str,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        nome = parcela_ref or "Parcela 1"
+        return {
+            "status": "executed",
+            "parcela": nome,
+            "farm_id": 1,
+            "historico": [
+                {
+                    "acquisition_date": "2026-10-25",
+                    "cloud_cover_pct": 8.5,
+                    "ndvi_mean": 0.65,
+                    "ndmi_mean": 0.22,
+                    "ndti_mean": 0.12,
+                    "salinity_index_mean": 0.08,
+                },
+                {
+                    "acquisition_date": "2026-10-10",
+                    "cloud_cover_pct": 12.0,
+                    "ndvi_mean": 0.58,
+                    "ndmi_mean": 0.19,
+                    "ndti_mean": 0.10,
+                    "salinity_index_mean": 0.09,
+                },
+            ],
+        }
+
     def listar_vendas(
         self,
         token: str,

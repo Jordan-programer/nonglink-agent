@@ -52,6 +52,24 @@ def _remover_acentos(texto: str) -> str:
     ).lower().strip()
 
 
+def _extrair_detalhe_seguro(resp: httpx.Response, fallback: str) -> str:
+    """Extrai mensagem amigável sem expor dados confidenciais, tokens, URLs ou erros internos 5xx."""
+    if resp.status_code >= 500:
+        return fallback
+
+    try:
+        data = resp.json()
+        if isinstance(data, dict):
+            detail = data.get("detail") or data.get("message") or data.get("erro")
+            if isinstance(detail, str) and len(detail) < 200:
+                det_lower = detail.lower()
+                if not any(k in det_lower for k in ("http://", "https://", "token", "key=", "bearer", "password", "senha", "secret")):
+                    return detail
+    except Exception:
+        pass
+    return fallback
+
+
 def _obter_tz_luanda():
     """Retorna o fuso horário de Angola (Africa/Luanda, UTC+1)."""
     try:
@@ -900,7 +918,8 @@ class ApiPlataforma(Plataforma):
                 return {"status": "error", "message": "Rega não encontrada ou pertence a outro utilizador."}
             if resp.status_code == 400:
                 return {"status": "error", "message": "Apenas regas no estado agendada podem ser canceladas."}
-            return {"status": "error", "message": f"Erro do NongLink ao cancelar rega: {resp.text}"}
+            detail = _extrair_detalhe_seguro(resp, "Não foi possível cancelar a rega.")
+            return {"status": "error", "message": f"Erro do NongLink ao cancelar rega: {detail}"}
         except Exception as exc:
             return {"status": "error", "message": f"Falha de comunicação com o NongLink: {exc}"}
 
@@ -931,7 +950,11 @@ class ApiPlataforma(Plataforma):
 
         # 2. Se forçada nova análise via POST /soil/{farm_id}/analyze (timeout de 90s, sem repetições automáticas)
         if forcar_nova_analise:
-            user_key = str(user.get("id")) if user and user.get("id") else (str(user.get("email")) if user and user.get("email") else "user_default")
+            user_key = (
+                str(user.get("id"))
+                if user and user.get("id")
+                else (str(user.get("utilizador_externo_id")) if user and user.get("utilizador_externo_id") else "user_default")
+            )
             limite_diario = int(os.environ.get("SOLO_MAX_POR_UTILIZADOR_DIA", str(SOIL_MAX_POR_UTILIZADOR_DIA_DEFAULT)))
 
             # Verificar quota de análises de satélite
@@ -999,12 +1022,13 @@ class ApiPlataforma(Plataforma):
                     "mensagem": f"Parcela '{nome_parcela}' não encontrada ou não pertence ao agricultor autenticado.",
                 }
 
+            detail = _extrair_detalhe_seguro(resp, "Erro ao analisar solo.")
             return {
                 "status": "error",
                 "codigo": resp.status_code,
                 "parcela": nome_parcela,
                 "farm_id": farm_id,
-                "mensagem": f"A API do NongLink devolveu erro ao analisar solo (HTTP {resp.status_code}): {resp.text}",
+                "mensagem": f"A API do NongLink devolveu erro ao analisar solo (HTTP {resp.status_code}): {detail}",
             }
 
         # 3. Leitura padrão (GET /soil/{farm_id}/latest com cache de 24h)
@@ -1081,6 +1105,60 @@ class ApiPlataforma(Plataforma):
                 f"Esta leitura depende da data da imagem ({acq_date}) e da cobertura de nuvens ({cloud_cover:.1f}%). "
                 "As orientações apresentadas são recomendações técnicas automáticas do NongLink."
             ),
+        }
+
+    def obter_historico_solo(
+        self,
+        parcela_ref: Optional[str],
+        token: str,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Consulta as observações históricas de solo via GET /soil/{farm_id}/history."""
+        if not token:
+            return {"status": "error", "message": "Token de autenticação obrigatório para consultar histórico de solo."}
+
+        res_parcela = self.resolver_parcela(parcela_ref, token)
+        if res_parcela.get("status") != "ok":
+            return res_parcela
+
+        farm_id = res_parcela["farm_id"]
+        nome_parcela = res_parcela.get("nome", f"Parcela #{farm_id}")
+        headers = {"Authorization": f"Bearer {token.strip()}"}
+
+        try:
+            resp = self._request_with_retry("GET", f"/soil/{farm_id}/history", headers=headers)
+        except (httpx.NetworkError, httpx.TimeoutException):
+            return {
+                "status": "error",
+                "parcela": nome_parcela,
+                "farm_id": farm_id,
+                "mensagem": "Falha de ligação ao consultar histórico de solo.",
+            }
+
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                "status": "executed",
+                "parcela": nome_parcela,
+                "farm_id": farm_id,
+                "historico": data if isinstance(data, list) else data.get("history", []),
+            }
+
+        if resp.status_code == 404:
+            return {
+                "status": "not_found",
+                "parcela": nome_parcela,
+                "farm_id": farm_id,
+                "mensagem": f"Nenhum histórico de solo encontrado para a parcela '{nome_parcela}'.",
+            }
+
+        detail = _extrair_detalhe_seguro(resp, "Erro ao obter histórico.")
+        return {
+            "status": "error",
+            "codigo": resp.status_code,
+            "parcela": nome_parcela,
+            "farm_id": farm_id,
+            "mensagem": f"Erro do NongLink ao consultar histórico de solo (HTTP {resp.status_code}): {detail}",
         }
 
     def listar_vendas(self, token: str) -> List[Dict[str, Any]]:

@@ -129,6 +129,16 @@ class Plataforma(ABC):
         pass
 
     @abstractmethod
+    def obter_historico_solo(
+        self,
+        parcela_ref: Optional[str],
+        token: str,
+        user: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Obtém as observações históricas de solo/satélite da parcela via GET /soil/{farm_id}/history."""
+        pass
+
+    @abstractmethod
     def listar_vendas(
         self,
         token: str,
